@@ -1,0 +1,53 @@
+metrics:
+  - name: ms_agent_mode
+    type: gauge
+    help: "Agent mode (0=sentinel,1=diagnostic)"
+    labels: [host]
+  - name: ms_samples_per_sec
+    type: gauge
+    help: "Effective perf samples per second"
+    labels: [host]
+  - name: ms_pmu_scale
+    type: gauge
+    help: "Current normalization factor applied to perf samples"
+    labels: [host]
+  - name: ms_flow_micromiss_rate
+    type: gauge
+    help: "Normalized cost attributed to L3 micromiss events per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_branch_mispred_rate
+    type: gauge
+    help: "Normalized branch misprediction cost per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_icache_stall_rate
+    type: gauge
+    help: "Normalized instruction cache stall cost per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_avx_downclock_rate
+    type: gauge
+    help: "Normalized AVX-frequency throttling cost per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_backend_stall_rate
+    type: gauge
+    help: "Normalized backend stall cost per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_false_sharing_rate
+    type: gauge
+    help: "Normalized XSNP_HITM cost per flow/function"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_remote_dram_rate
+    type: gauge
+    help: "Normalized cost attributed to remote DRAM events"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_remote_dram_hotspot
+    type: gauge
+    help: "Sliding-window OFFCORE_RESPONSE samples aggregated per flow/NUMA/ifindex"
+    labels: [host, flow_id, numa_node, ifindex]
+  - name: ms_flow_event_norm
+    type: gauge
+    help: "Normalized cost for miscellaneous PMU events"
+    labels: [host, flow_id, function_hash, callstack_id, pmu_event, direction]
+  - name: ms_false_sharing_score
+    type: gauge
+    help: "Weighted false sharing impact per cache line"
+    labels: [host, line_addr, mapping, pid, offset]
