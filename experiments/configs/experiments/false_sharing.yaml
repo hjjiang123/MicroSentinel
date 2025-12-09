@@ -1,0 +1,13 @@
+suite: false_sharing
+run_s: 180
+workload: load_balancer
+config: experiments/configs/workloads/lb.yaml
+modes:
+  - microsentinel
+  - baseline
+pmu_events:
+  - OFFCORE_RESPONSE.DEMAND_RFO.HITM
+  - MEM_LOAD_L3_MISS.REMOTE_DRAM
+mutations:
+  - description: remove padding from conn_state
+    patch_file: patches/conn_state_false_sharing.patch

@@ -1,0 +1,22 @@
+suite: data_object
+run_s: 120
+workload: kv
+config: experiments/configs/workloads/kv.yaml
+modes:
+  - microsentinel
+pmu_events:
+  - MEM_LOAD_RETIRED.L3_MISS
+  - OFFCORE_RESPONSE.ALL_RFO
+object_map:
+  globals:
+    - symbol: A
+      size: 65536
+    - symbol: B
+      size: 65536
+    - symbol: hot_cache
+      size: 32768
+  heaps:
+    - tenant: tenant-a
+      label: obj_hot
+      bytes: 65536
+notes: "ensure KV server binary is rebuilt with -fno-omit-frame-pointer and exports symbols"

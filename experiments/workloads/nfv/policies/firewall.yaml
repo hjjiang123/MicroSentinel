@@ -1,0 +1,5 @@
+allowed_ports:
+  - 443
+  - 8443
+blocked_cidrs:
+  - "10.5.0.0/16"

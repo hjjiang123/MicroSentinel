@@ -7,12 +7,14 @@ agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../agent/include/micro_
 agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/aggregator.cpp.o: ../agent/src/aggregator.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../agent/include/micro_sentinel/anomaly.h
 agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../agent/include/micro_sentinel/anomaly_monitor.h
 agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp.o: ../agent/src/anomaly_monitor.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/anomaly.h
@@ -20,13 +22,20 @@ agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/src/bpf_orchestrator.cpp
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/bpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_legacy.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_version.h
 
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../agent/include/micro_sentinel/anomaly.h
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../agent/include/micro_sentinel/bucket_update.h
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/bucket_update.cpp.o: ../agent/src/bucket_update.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../agent/include/micro_sentinel/aggregator.h
@@ -36,11 +45,13 @@ agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../agent/include/m
 agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/clickhouse_sink.cpp.o: ../agent/src/clickhouse_sink.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/config_loader.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/config_loader.cpp.o: ../agent/include/micro_sentinel/config_loader.h
 agent/CMakeFiles/ms_agent_core.dir/src/config_loader.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/config_loader.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/config_loader.cpp.o: ../agent/src/config_loader.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../agent/include/micro_sentinel/anomaly.h
@@ -51,16 +62,19 @@ agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../agent/include/mic
 agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../agent/include/micro_sentinel/json.h
 agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
 agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/control_plane.cpp.o: ../agent/src/control_plane.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../agent/include/micro_sentinel/fs_detector.h
 agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/fs_detector.cpp.o: ../agent/src/fs_detector.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/interference.cpp.o: ../agent/include/micro_sentinel/interference.h
 agent/CMakeFiles/ms_agent_core.dir/src/interference.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/interference.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/interference.cpp.o: ../agent/src/interference.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/json.cpp.o: ../agent/include/micro_sentinel/json.h
@@ -69,12 +83,14 @@ agent/CMakeFiles/ms_agent_core.dir/src/json.cpp.o: ../agent/src/json.cpp
 agent/CMakeFiles/ms_agent_core.dir/src/metrics_exporter.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/metrics_exporter.cpp.o: ../agent/include/micro_sentinel/metrics_exporter.h
 agent/CMakeFiles/ms_agent_core.dir/src/metrics_exporter.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/metrics_exporter.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/metrics_exporter.cpp.o: ../agent/src/metrics_exporter.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../agent/include/micro_sentinel/anomaly.h
 agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
 agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/mode_controller.cpp.o: ../agent/src/mode_controller.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/include/micro_sentinel/config.h
@@ -82,13 +98,20 @@ agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/includ
 agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/include/micro_sentinel/monitoring_targets.h
 agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/src/monitoring_targets.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/perf_consumer.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/src/perf_consumer.cpp
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/bpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_legacy.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_version.h
 
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/include/micro_sentinel/anomaly.h
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/include/micro_sentinel/bpf_orchestrator.h
@@ -96,11 +119,17 @@ agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/include/micro
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/include/micro_sentinel/pmu_rotator.h
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: ../agent/src/pmu_rotator.cpp
+agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_legacy.h
+agent/CMakeFiles/ms_agent_core.dir/src/pmu_rotator.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_version.h
 
 agent/CMakeFiles/ms_agent_core.dir/src/remote_dram_analyzer.cpp.o: ../agent/include/micro_sentinel/remote_dram_analyzer.h
 agent/CMakeFiles/ms_agent_core.dir/src/remote_dram_analyzer.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/remote_dram_analyzer.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/remote_dram_analyzer.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/remote_dram_analyzer.cpp.o: ../agent/src/remote_dram_analyzer.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/aggregator.h
@@ -127,20 +156,28 @@ agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sen
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/tsc_calibrator.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/src/runtime.cpp
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf.h
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_legacy.h
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_version.h
 
 agent/CMakeFiles/ms_agent_core.dir/src/skew_adjuster.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/skew_adjuster.cpp.o: ../agent/include/micro_sentinel/skew_adjuster.h
 agent/CMakeFiles/ms_agent_core.dir/src/skew_adjuster.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/skew_adjuster.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/skew_adjuster.cpp.o: ../agent/src/skew_adjuster.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/symbolizer.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_core.dir/src/symbolizer.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/symbolizer.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/symbolizer.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/symbolizer.cpp.o: ../agent/src/symbolizer.cpp
 
 agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o: ../agent/include/micro_sentinel/tsc_calibrator.h
 agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o: ../agent/src/tsc_calibrator.cpp
 

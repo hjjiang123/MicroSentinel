@@ -121,9 +121,3 @@ Override ClickHouse settings via the config file or CLI aliases (e.g. `--clickho
 | `clickhouse_flush_ms` | `500` | Flush cadence for all ClickHouse batches in milliseconds. |
 | `clickhouse_batch_size` | `4096` | Maximum rows sent per HTTP batch for any table. |
 
-## Next Steps
-
-- Wire the perf consumer to real perf ring buffers via `perf_event_open` + `ioctl(PERF_EVENT_IOC_SET_BPF)`.
-- Extend symbolization to leverage ELF/DWARF plus JIT map tracking.
-- Persist remote DRAM hotspot findings into ClickHouse for long-term correlation and dashboards.
-- Add NUMA-aware scheduling to map consumer threads to CPU sets automatically.

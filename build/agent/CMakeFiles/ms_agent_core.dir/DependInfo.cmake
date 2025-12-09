@@ -36,7 +36,9 @@ set(CMAKE_TARGET_DEFINITIONS_CXX
 # The include file search paths:
 set(CMAKE_CXX_TARGET_INCLUDE_PATH
   "../agent/include"
-  "../bpf"
+  "../agent/../bpf"
+  "/home/hjjiang/tools/libbpf/src/build/root/usr/include"
+  "/home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf"
   )
 
 # Targets to which this target links.

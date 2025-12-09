@@ -128,8 +128,10 @@ void ClickHouseSink::RunLoop() {
 }
 
 bool ClickHouseSink::ParseEndpoint() {
-    if (cfg_.endpoint.rfind("http://", 0) != 0)
+    if (cfg_.endpoint.rfind("http://", 0) != 0) {
+        std::cerr << "[ClickHouseSink] Invalid endpoint (must start with http://): " << cfg_.endpoint << std::endl;
         return false;
+    }
     std::string rest = cfg_.endpoint.substr(7);
     auto slash = rest.find('/');
     std::string host_port = slash == std::string::npos ? rest : rest.substr(0, slash);
@@ -143,20 +145,28 @@ bool ClickHouseSink::ParseEndpoint() {
         endpoint_.port = static_cast<uint16_t>(std::stoi(host_port.substr(colon + 1)));
     }
     endpoint_.valid = !endpoint_.host.empty();
+    if (!endpoint_.valid)
+        std::cerr << "[ClickHouseSink] Failed to parse ClickHouse endpoint host from: " << cfg_.endpoint << std::endl;
     return endpoint_.valid;
 }
 
 bool ClickHouseSink::SendPayload(const std::string &body) {
-    if (!endpoint_.valid && !ParseEndpoint())
+    // printf("Sending payload to ClickHouse (%zu bytes)\n", body.size());
+    if (!endpoint_.valid && !ParseEndpoint()) {
+        std::cerr << "[ClickHouseSink] Unable to parse endpoint; payload discarded" << std::endl;
         return false;
+    }
 
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     std::string port = std::to_string(endpoint_.port);
+    // printf("Connecting to %s:%s\n", endpoint_.host.c_str(), port.c_str());
     addrinfo *res = nullptr;
-    if (getaddrinfo(endpoint_.host.c_str(), port.c_str(), &hints, &res) != 0)
+    if (getaddrinfo(endpoint_.host.c_str(), port.c_str(), &hints, &res) != 0){
+        std::cerr << "[ClickHouseSink] DNS resolution failed for " << endpoint_.host << ':' << port << std::endl;
         return false;
+    }
 
     int fd = -1;
     for (addrinfo *ai = res; ai; ai = ai->ai_next) {
@@ -169,8 +179,10 @@ bool ClickHouseSink::SendPayload(const std::string &body) {
         fd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0)
+    if (fd < 0) {
+        std::cerr << "[ClickHouseSink] Could not connect to ClickHouse at " << endpoint_.host << ':' << port << std::endl;
         return false;
+    }
 
     std::ostringstream req;
     req << "POST " << endpoint_.path << " HTTP/1.1\r\n";
@@ -180,11 +192,14 @@ bool ClickHouseSink::SendPayload(const std::string &body) {
     req << "Connection: close\r\n\r\n";
     req << body;
     std::string data = req.str();
+    // printf("Sending %zu bytes to %s:%s\n", data.size(), endpoint_.host.c_str(), port.c_str());
+    // printf("Request:\n%s\n", data.c_str());
     size_t sent = 0;
     while (sent < data.size()) {
         ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, 0);
         if (n <= 0) {
             ::close(fd);
+            std::cerr << "[ClickHouseSink] Socket send failed while writing to " << endpoint_.host << ':' << port << std::endl;
             return false;
         }
         sent += static_cast<size_t>(n);
@@ -192,10 +207,18 @@ bool ClickHouseSink::SendPayload(const std::string &body) {
     char buf[256];
     ssize_t n = ::recv(fd, buf, sizeof(buf) - 1, 0);
     ::close(fd);
-    if (n <= 0)
+    if (n <= 0) {
+        std::cerr << "[ClickHouseSink] No response received from ClickHouse at " << endpoint_.host << ':' << port << std::endl;
         return false;
+    }
+    // printf("Received response from %s:%s\n", endpoint_.host.c_str(), port.c_str());
     buf[n] = '\0';
-    return std::string(buf).find("200") != std::string::npos;
+    // printf("Response: %s\n", buf);
+    if (std::string(buf).find("200") == std::string::npos) {
+        std::cerr << "[ClickHouseSink] Unexpected HTTP response from ClickHouse: " << buf << std::endl;
+        return false;
+    }
+    return true;
 }
 
 void ClickHouseSink::FlushBatch() {
@@ -216,9 +239,9 @@ void ClickHouseSink::FlushBatch() {
         payload << "INSERT INTO " << cfg_.table << " FORMAT JSONEachRow\n";
         for (const auto &kv : pending) {
             uint64_t bucket_start_ns = kv.first.bucket * bucket_width_ns_;
-            double window_start = static_cast<double>(bucket_start_ns) / 1'000'000'000.0;
+            // double window_start = static_cast<double>(bucket_start_ns) / 1'000'000'000.0;
             payload << '{'
-                    << "\"window_start\":" << std::fixed << std::setprecision(9) << window_start << ','
+                    << "\"window_start\":" << bucket_start_ns << ','
                     << "\"host\":\"" << JsonEscape(agent_hostname_) << "\"," 
                     << "\"flow_id\":" << kv.first.flow_id << ','
                     << "\"function_id\":" << kv.first.function_hash << ','
@@ -232,7 +255,8 @@ void ClickHouseSink::FlushBatch() {
                     << "\"norm_cost\":" << kv.second.norm_cost
                     << "}\n";
         }
-
+        // printf("ClickHouse payload size: %zu bytes\n", payload.str().size());
+        // printf("ClickHouse payload:\n%s\n", payload.str().c_str());
         if (!SendPayload(payload.str()))
             std::cerr << "Failed to flush ClickHouse batch" << std::endl;
     }
@@ -249,16 +273,24 @@ void ClickHouseSink::FlushBatch() {
                 const auto &frame = trace.frames[i];
                 if (i > 0)
                     payload << ',';
-                payload << '{'
-                        << "\"binary\":\"" << JsonEscape(frame.binary) << "\"," 
-                        << "\"function\":\"" << JsonEscape(frame.function) << "\"," 
-                        << "\"file\":\"" << JsonEscape(frame.source_file) << "\"," 
-                        << "\"line\":" << frame.line
-                        << "}";
+                // payload << '{'
+                //         << "\"binary\":\"" << JsonEscape(frame.binary) << "\"," 
+                //         << "\"function\":\"" << JsonEscape(frame.function) << "\"," 
+                //         << "\"file\":\"" << JsonEscape(frame.source_file) << "\"," 
+                //         << "\"line\":" << frame.line
+                //         << "}";
+                payload << '['
+                        << "\"" << JsonEscape(frame.binary) << "\","
+                        << "\"" << JsonEscape(frame.function) << "\","
+                        << "\"" << JsonEscape(frame.source_file) << "\","
+                        << frame.line
+                        << ']';
             }
+            // payload << "]}\n";
             payload << "]}\n";
         }
-
+        // printf("ClickHouse stack payload size: %zu bytes\n", payload.str().size());
+        // printf("ClickHouse stack payload:\n%s\n", payload.str().c_str());
         if (!SendPayload(payload.str()))
             std::cerr << "Failed to flush ClickHouse stack batch" << std::endl;
     }
@@ -269,9 +301,10 @@ void ClickHouseSink::FlushBatch() {
         for (const auto &entry : raw_pending) {
             const Sample &s = entry.sample;
             const LbrStack &stack = entry.stack;
-            double ts = static_cast<double>(s.tsc) / 1'000'000'000.0;
+            // printf("Sample TSC: %llu\n", s.tsc);
+            // double ts = static_cast<double>(s.tsc) / 1'000'000'000.0;
             payload << '{'
-                    << "\"ts\":" << std::fixed << std::setprecision(9) << ts << ','
+                    << "\"ts\":" << s.tsc << ','
                     << "\"host\":\"" << JsonEscape(agent_hostname_) << "\"," 
                     << "\"cpu\":" << s.cpu << ','
                     << "\"pid\":" << s.pid << ','
@@ -294,7 +327,7 @@ void ClickHouseSink::FlushBatch() {
             }
             payload << "]}\n";
         }
-
+        printf("ClickHouse raw payload:\n%s\n", payload.str().c_str());
         if (!SendPayload(payload.str()))
             std::cerr << "Failed to flush raw ClickHouse batch" << std::endl;
     }
@@ -311,7 +344,7 @@ void ClickHouseSink::FlushBatch() {
                     << "\"size\":" << symbol.object.size << ','
                     << "\"permissions\":\"" << JsonEscape(symbol.object.permissions) << "\"}\n";
         }
-
+        // printf("ClickHouse data object payload:\n%s\n", payload.str().c_str());
         if (!SendPayload(payload.str()))
             std::cerr << "Failed to flush ClickHouse data object batch" << std::endl;
     }

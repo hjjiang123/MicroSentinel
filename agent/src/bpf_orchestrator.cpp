@@ -90,8 +90,8 @@ BpfOrchestrator::~BpfOrchestrator() {
     xdp_links_.clear();
     if (ctx_link_)
         bpf_link__destroy(ctx_link_);
-    if (ctx_tx_link_)
-        bpf_link__destroy(ctx_tx_link_);
+    /* if (ctx_tx_link_)
+        bpf_link__destroy(ctx_tx_link_); */
     if (obj_)
         bpf_object__close(obj_);
 #endif
@@ -99,15 +99,23 @@ BpfOrchestrator::~BpfOrchestrator() {
 
 bool BpfOrchestrator::Init() {
 #ifdef MS_WITH_LIBBPF
-    if (cfg_.mock_mode)
+    if (cfg_.mock_mode) {
+        std::cerr << "[BpfOrchestrator] Perf consumer configured for mock mode; skipping BPF init" << std::endl;
         return false;
+    }
 
-    if (!LoadBpfObject())
+    if (!LoadBpfObject()) {
+        std::cerr << "[BpfOrchestrator] LoadBpfObject failed" << std::endl;
         return false;
-    if (!AttachNetPrograms())
+    }
+    if (!AttachNetPrograms()) {
+        std::cerr << "[BpfOrchestrator] AttachNetPrograms failed" << std::endl;
         return false;
-    if (!ConfigureTokenBucket(cfg_.sentinel_sample_budget, cfg_.hard_drop_ns))
+    }
+    if (!ConfigureTokenBucket(cfg_.sentinel_sample_budget, cfg_.hard_drop_ns)) {
+        std::cerr << "[BpfOrchestrator] ConfigureTokenBucket failed" << std::endl;
         return false;
+    }
     if (!cookie_supported_)
         std::cerr << "MicroSentinel running in legacy PMU mode; upgrade libbpf for per-event attribution" << std::endl;
     ready_ = true;
@@ -121,6 +129,14 @@ bool BpfOrchestrator::Init() {
 #ifdef MS_WITH_LIBBPF
 
 static int PerfEventOpen(perf_event_attr *attr, int pid, int cpu, int group_fd, unsigned long flags) {
+    std::cout << "[PerfCmd] perf_event_open pid=" << pid
+              << " cpu=" << cpu
+              << " type=" << attr->type
+              << " config=0x" << std::hex << attr->config << std::dec
+              << " period=" << attr->sample_period
+              << " precise=" << static_cast<int>(attr->precise_ip)
+              << " flags=0x" << std::hex << flags << std::dec
+              << std::endl;
     return static_cast<int>(syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags));
 }
 
@@ -129,17 +145,20 @@ bool BpfOrchestrator::LoadBpfObject() {
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 #endif
     obj_ = bpf_object__open_file(cfg_.bpf_object_path.c_str(), nullptr);
+    std::cout << "Loading BPF object from: " << cfg_.bpf_object_path << std::endl;
     if (!obj_) {
         std::cerr << "Failed to open BPF object: " << cfg_.bpf_object_path << std::endl;
         return false;
     }
+    std::cout << "Loading BPF object from: " << cfg_.bpf_object_path << std::endl;
+
     if (int err = bpf_object__load(obj_); err) {
         std::cerr << "Failed to load BPF object: " << strerror(-err) << std::endl;
         return false;
     }
 
     ctx_prog_ = bpf_object__find_program_by_name(obj_, "ms_ctx_inject");
-    ctx_tx_prog_ = bpf_object__find_program_by_name(obj_, "ms_ctx_inject_tx");
+    /* ctx_tx_prog_ = bpf_object__find_program_by_name(obj_, "ms_ctx_inject_tx"); */
     xdp_prog_ = bpf_object__find_program_by_name(obj_, "ms_ctx_inject_xdp");
     pmu_prog_ = bpf_object__find_program_by_name(obj_, "ms_pmu_handler");
     events_map_ = bpf_object__find_map_by_name(obj_, "ms_events");
@@ -148,8 +167,15 @@ bool BpfOrchestrator::LoadBpfObject() {
     tb_ctrl_map_ = bpf_object__find_map_by_name(obj_, "ms_tb_ctrl_map");
     active_evt_map_ = bpf_object__find_map_by_name(obj_, "ms_active_event");
 
-    if (!ctx_prog_ || !ctx_tx_prog_ || !pmu_prog_ || !events_map_ || !tb_cfg_map_ || !tb_ctrl_map_ || !active_evt_map_) {
+    if (!ctx_prog_ || /*!ctx_tx_prog_ ||*/ !pmu_prog_ || !events_map_ || !tb_cfg_map_ || !tb_ctrl_map_ || !active_evt_map_) {
         std::cerr << "Missing symbols in BPF object" << std::endl;
+        std::cerr << "ctx_prog_: " << (ctx_prog_ ? "found" : "missing") << std::endl;
+        /* std::cerr << "ctx_tx_prog_: " << (ctx_tx_prog_ ? "found" : "missing") << std::endl; */
+        std::cerr << "pmu_prog_: " << (pmu_prog_ ? "found" : "missing") << std::endl;
+        std::cerr << "events_map_: " << (events_map_ ? "found" : "missing") << std::endl;
+        std::cerr << "tb_cfg_map_: " << (tb_cfg_map_ ? "found" : "missing") << std::endl;
+        std::cerr << "tb_ctrl_map_: " << (tb_ctrl_map_ ? "found" : "missing") << std::endl;
+        std::cerr << "active_evt_map_: " << (active_evt_map_ ? "found" : "missing") << std::endl;
         return false;
     }
 
@@ -158,24 +184,21 @@ bool BpfOrchestrator::LoadBpfObject() {
     tb_cfg_map_fd_ = bpf_map__fd(tb_cfg_map_);
     tb_ctrl_map_fd_ = bpf_map__fd(tb_ctrl_map_);
     active_evt_fd_ = bpf_map__fd(active_evt_map_);
-    if (cookie_map_fd_ < 0)
+    if (cookie_map_fd_ < 0){
         cookie_supported_ = false;
+        std::cout<< "MicroSentinel running in legacy PMU mode; upgrade libbpf for per-event attribution" <<std::endl;
+    }
     return events_map_fd_ >= 0 && tb_cfg_map_fd_ >= 0 && tb_ctrl_map_fd_ >= 0 && active_evt_fd_ >= 0;
 }
 
 bool BpfOrchestrator::AttachNetPrograms() {
-    if (!ctx_prog_ || !ctx_tx_prog_)
+    if (!ctx_prog_ /*|| !ctx_tx_prog_*/) {
+        std::cerr << "[BpfOrchestrator] Context injector program missing" << std::endl;
         return false;
+    }
     ctx_link_ = bpf_program__attach_trace(ctx_prog_);
     if (!ctx_link_) {
         std::cerr << "Failed to attach ms_ctx_inject" << std::endl;
-        return false;
-    }
-    ctx_tx_link_ = bpf_program__attach_trace(ctx_tx_prog_);
-    if (!ctx_tx_link_) {
-        std::cerr << "Failed to attach ms_ctx_inject_tx" << std::endl;
-        bpf_link__destroy(ctx_link_);
-        ctx_link_ = nullptr;
         return false;
     }
     if (!cfg_.xdp_ifaces.empty()) {
@@ -196,8 +219,10 @@ bool BpfOrchestrator::AttachNetPrograms() {
 }
 
 bool BpfOrchestrator::ConfigureTokenBucket(uint64_t samples_per_sec, uint64_t hard_drop_ns) {
-    if (tb_cfg_map_fd_ < 0 || tb_ctrl_map_fd_ < 0)
+    if (tb_cfg_map_fd_ < 0 || tb_ctrl_map_fd_ < 0) {
+        std::cerr << "[BpfOrchestrator] Token bucket maps unavailable" << std::endl;
         return false;
+    }
     struct ms_tb_cfg cfg{};
     cfg.max_samples_per_sec = samples_per_sec;
     cfg.hard_drop_threshold = hard_drop_ns ? hard_drop_ns : MS_FLOW_SKID_NS * 4ULL;
@@ -216,23 +241,29 @@ bool BpfOrchestrator::ConfigureTokenBucket(uint64_t samples_per_sec, uint64_t ha
 }
 
 bool BpfOrchestrator::WriteCookie(__u64 cookie, ms_pmu_event_type evt) {
-    if (!cookie_supported_ || cookie_map_fd_ < 0)
+    if (!cookie_supported_ || cookie_map_fd_ < 0) {
+        std::cerr << "[BpfOrchestrator] Cookie map unavailable while binding event " << evt << std::endl;
         return false;
+    }
     struct ms_event_binding binding{static_cast<__u32>(evt)};
     if (bpf_map_update_elem(cookie_map_fd_, &cookie, &binding, BPF_ANY) < 0) {
         std::perror("bpf_map_update_elem(cookie)");
+        std::cerr << "[BpfOrchestrator] Failed to write cookie mapping for event " << evt << std::endl;
         return false;
     }
     return true;
 }
 
 bool BpfOrchestrator::WriteActiveEvent(ms_pmu_event_type evt) {
-    if (active_evt_fd_ < 0)
+    if (active_evt_fd_ < 0) {
+        std::cerr << "[BpfOrchestrator] Active event map unavailable" << std::endl;
         return false;
+    }
     __u32 key = 0;
     __u32 value = static_cast<__u32>(evt);
     if (bpf_map_update_elem(active_evt_fd_, &key, &value, BPF_ANY) < 0) {
         std::perror("bpf_map_update_elem(active_evt)");
+        std::cerr << "[BpfOrchestrator] Failed to publish active event " << evt << std::endl;
         return false;
     }
     return true;
@@ -244,7 +275,7 @@ void BpfOrchestrator::DetachPerfGroupsLocked() {
             bpf_link__destroy(attach.link);
         if (attach.fd >= 0)
             close(attach.fd);
-        if (cookie_supported_ && cookie_map_fd_ >= 0 && attach.cookie != 0)
+        if (cookie_map_fd_ >= 0 && attach.cookie != 0)
             bpf_map_delete_elem(cookie_map_fd_, &attach.cookie);
     }
     perf_links_.clear();
@@ -277,17 +308,92 @@ bool BpfOrchestrator::AttachXdpPrograms() {
 
 bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &groups) {
     DetachPerfGroupsLocked();
-    if (!pmu_prog_)
-        return false;
-
-#if !MS_LIBBPF_HAS_PERF_OPTS
-    if (groups.empty() || groups.front().events.empty()) {
-        std::cerr << "No PMU events configured for legacy libbpf mode" << std::endl;
+    if (!pmu_prog_) {
+        std::cerr << "[BpfOrchestrator] PMU handler program missing" << std::endl;
         return false;
     }
+
+#if !MS_LIBBPF_HAS_PERF_OPTS
+    return AttachPerfGroupsLegacy(groups);
+#else
+    if (!cookie_supported_)
+        return AttachPerfGroupsLegacy(groups);
+
+    __u64 cookie = next_cookie_;
+    size_t limit = max_events_per_group_;
+    bool limit_events = (limit != static_cast<size_t>(-1));
+
+    for (const auto &group : groups) {
+        size_t events_attached = 0;
+        for (const auto &evt : group.events) {
+            if (limit_events && events_attached >= limit)
+                break;
+            for (int cpu : cpus_) {
+                perf_event_attr attr{};
+                attr.type = evt.type;
+                attr.size = sizeof(attr);
+                attr.config = evt.config;
+                attr.sample_period = evt.sample_period;
+                attr.disabled = 0;
+                attr.exclude_hv = 1;
+                attr.exclude_idle = 1;
+                attr.precise_ip = evt.precise ? 2 : 0;
+                attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_ADDR;
+
+                int fd = PerfEventOpen(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+                if (fd < 0) {
+                    std::perror("perf_event_open");
+                    continue;
+                }
+
+                bpf_perf_event_opts opts{};
+                opts.sz = sizeof(opts);
+                opts.bpf_cookie = cookie;
+                auto *link = bpf_program__attach_perf_event_opts(pmu_prog_, fd, &opts);
+                long err = libbpf_get_error(link);
+                if (err) {
+                    if (err == -EOPNOTSUPP) {
+                        std::cerr << "Perf-event cookies unsupported by kernel; falling back to legacy attribution" << std::endl;
+                        cookie_supported_ = false;
+                        close(fd);
+                        DetachPerfGroupsLocked();
+                        return AttachPerfGroupsLegacy(groups);
+                    }
+
+                    std::cerr << "Failed to attach perf event for CPU " << cpu << std::endl;
+                    close(fd);
+                    continue;
+                }
+
+                if (!WriteCookie(cookie, evt.logical)) {
+                    bpf_link__destroy(link);
+                    close(fd);
+                    continue;
+                }
+
+                perf_links_.push_back(PerfAttach{fd, link, cookie});
+                ++cookie;
+            }
+            events_attached++;
+        }
+    }
+
+    next_cookie_ = cookie;
+    return !perf_links_.empty();
+#endif
+}
+
+bool BpfOrchestrator::AttachPerfGroupsLegacy(const std::vector<PmuGroupConfig> &groups)
+{
+    if (groups.empty() || groups.front().events.empty()) {
+        std::cerr << "No PMU events configured for legacy perf mode" << std::endl;
+        return false;
+    }
+
     const auto &evt = groups.front().events.front();
     if (!WriteActiveEvent(evt.logical))
         return false;
+
     for (int cpu : cpus_) {
         perf_event_attr attr{};
         attr.type = evt.type;
@@ -317,72 +423,24 @@ bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &
     }
 
     if (perf_links_.empty()) {
-        std::cerr << "Legacy perf attachment failed; consider upgrading libbpf for multi-event support" << std::endl;
+        std::cerr << "[BpfOrchestrator] Legacy perf attachment failed on all CPUs; consider upgrading libbpf" << std::endl;
         return false;
     }
 
     return true;
-#else
-    __u64 cookie = next_cookie_;
-    size_t limit = max_events_per_group_;
-    bool limit_events = (limit != static_cast<size_t>(-1));
-
-    for (const auto &group : groups) {
-        size_t events_attached = 0;
-        for (const auto &evt : group.events) {
-            if (limit_events && events_attached >= limit)
-                break;
-            for (int cpu : cpus_) {
-                perf_event_attr attr{};
-                attr.type = evt.type;
-                attr.size = sizeof(attr);
-                attr.config = evt.config;
-                attr.sample_period = evt.sample_period;
-                attr.disabled = 0;
-                attr.exclude_hv = 1;
-                attr.exclude_idle = 1;
-                attr.precise_ip = evt.precise ? 2 : 0;
-                attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_ADDR;
-
-                int fd = PerfEventOpen(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
-                if (fd < 0) {
-                    std::perror("perf_event_open");
-                    continue;
-                }
-
-                auto opts = LIBBPF_OPTS(bpf_perf_event_attach_opts, .bpf_cookie = cookie);
-                auto *link = bpf_program__attach_perf_event_opts(pmu_prog_, fd, &opts);
-                if (libbpf_get_error(link)) {
-                    std::cerr << "Failed to attach perf event for CPU " << cpu << std::endl;
-                    close(fd);
-                    continue;
-                }
-
-                if (!WriteCookie(cookie, evt.logical)) {
-                    bpf_link__destroy(link);
-                    close(fd);
-                    continue;
-                }
-
-                perf_links_.push_back(PerfAttach{fd, link, cookie});
-                ++cookie;
-            }
-            events_attached++;
-        }
-    }
-
-    next_cookie_ = cookie;
-    return !perf_links_.empty();
-#endif
 }
 
 bool BpfOrchestrator::SwitchMode(AgentMode mode) {
     const auto &groups = (mode == AgentMode::Sentinel) ? cfg_.sentinel_groups : cfg_.diagnostic_groups;
-    if (groups.empty())
+    if (groups.empty()) {
+        std::cerr << "[BpfOrchestrator] No PMU groups configured for mode " << (mode == AgentMode::Sentinel ? "Sentinel" : "Diagnostic") << std::endl;
         return false;
+    }
     uint64_t budget = (mode == AgentMode::Sentinel) ? cfg_.sentinel_sample_budget : cfg_.diagnostic_sample_budget;
-    if (!ConfigureTokenBucket(budget, cfg_.hard_drop_ns))
+    if (!ConfigureTokenBucket(budget, cfg_.hard_drop_ns)) {
+        std::cerr << "[BpfOrchestrator] Failed to configure token bucket for mode switch" << std::endl;
         return false;
+    }
     std::lock_guard<std::mutex> lk(mu_);
     active_groups_ = groups;
     active_group_index_ = 0;
@@ -390,6 +448,7 @@ bool BpfOrchestrator::SwitchMode(AgentMode mode) {
     to_attach.push_back(active_groups_.front());
     bool ok = AttachPerfGroupsLocked(to_attach);
     if (!ok)
+        std::cerr << "[BpfOrchestrator] AttachPerfGroupsLocked failed during mode switch" << std::endl;
         active_groups_.clear();
     return ok;
 }
@@ -397,12 +456,17 @@ bool BpfOrchestrator::SwitchMode(AgentMode mode) {
 bool BpfOrchestrator::RotateToGroup(size_t index) {
 #ifdef MS_WITH_LIBBPF
     std::lock_guard<std::mutex> lk(mu_);
-    if (!ready_ || active_groups_.empty() || index >= active_groups_.size())
+    if (!ready_ || active_groups_.empty() || index >= active_groups_.size()) {
+        std::cerr << "[BpfOrchestrator] RotateToGroup invalid state (ready=" << ready_ << ", groups=" << active_groups_.size()
+                  << ", requested=" << index << ")" << std::endl;
         return false;
+    }
     std::vector<PmuGroupConfig> to_attach;
     to_attach.push_back(active_groups_[index]);
-    if (!AttachPerfGroupsLocked(to_attach))
+    if (!AttachPerfGroupsLocked(to_attach)) {
+        std::cerr << "[BpfOrchestrator] Failed to attach PMU group index " << index << std::endl;
         return false;
+    }
     active_group_index_ = index;
     return true;
 #else
@@ -417,8 +481,10 @@ bool BpfOrchestrator::UpdateSampleBudget(AgentMode mode,
                                          uint64_t hard_drop_ns) {
 #ifdef MS_WITH_LIBBPF
     uint64_t active_budget = (mode == AgentMode::Sentinel) ? sentinel_budget : diagnostic_budget;
-    if (!ready_ || active_budget == 0)
+    if (!ready_ || active_budget == 0) {
+        std::cerr << "[BpfOrchestrator] UpdateSampleBudget rejected (ready=" << ready_ << ", active_budget=" << active_budget << ")" << std::endl;
         return false;
+    }
     cfg_.sentinel_sample_budget = sentinel_budget;
     cfg_.diagnostic_sample_budget = diagnostic_budget;
     cfg_.hard_drop_ns = hard_drop_ns;

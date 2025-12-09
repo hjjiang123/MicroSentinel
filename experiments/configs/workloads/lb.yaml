@@ -1,0 +1,40 @@
+workload: load_balancer
+lb_node:
+  binary: "python3 experiments/workloads/lb/l4_lb.py"
+  bind_address: "211.0.0.101"
+  port: 7100
+  workers: 8
+  rss_queues: 8
+  backends:
+    - host: "127.0.0.1"
+      port: 7201
+    - host: "127.0.0.1"
+      port: 7202
+    - host: "127.0.0.1"
+      port: 7203
+backend_stub:
+  binary: "python3 experiments/workloads/lb/backend_echo.py"
+  workers: 6
+clients:
+  generator: "python3 experiments/workloads/lb/lb_client.py"
+  flows: 512
+  remote:
+    host: "211.0.0.102"
+    workdir: "~/MicroSentinel"
+    metrics_dir: "~/MicroSentinel/artifacts/remote"
+  protocol: "tcp"
+  mix:
+    long_connections: 0.6
+    short_connections: 0.4
+  tenants:
+    - name: "tenant-a"
+      vip: "10.10.0.10"
+      port: 80
+      dscp: 8
+    - name: "tenant-b"
+      vip: "10.10.0.20"
+      port: 80
+      dscp: 16
+telemetry:
+  collect_rtt: true
+  rss_mapping_dump: true

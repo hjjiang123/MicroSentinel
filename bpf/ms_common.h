@@ -1,7 +1,11 @@
 #ifndef MS_COMMON_H
 #define MS_COMMON_H
 
+#ifdef __cplusplus
 #include <linux/types.h>
+#else
+#include "vmlinux.h"
+#endif
 
 #define MS_HISTORY_LEN 16
 #define MS_LBR_MAX     16

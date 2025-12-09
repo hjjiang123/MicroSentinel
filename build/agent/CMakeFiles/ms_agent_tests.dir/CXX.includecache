@@ -149,6 +149,10 @@ micro_sentinel/config.h
 ../bpf/ms_common.h
 linux/types.h
 -
+vmlinux.h
+../bpf/vmlinux.h
+
+../bpf/vmlinux.h
 
 /home/hjjiang/MicroSentinel/agent/tests/test_monitoring_targets.cpp
 cassert

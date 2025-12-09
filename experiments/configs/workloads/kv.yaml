@@ -1,0 +1,33 @@
+workload: kv
+server:
+  binary: "python3 experiments/workloads/kv/kv_server.py"
+  bind_address: "211.0.0.101"
+  port: 7000
+  threads: 16
+  numa_policy: "numactl --cpunodebind=0 --membind=0"
+  dataset:
+    key_space: 1048576
+    value_size_bytes: 256
+  token_bucket_defaults:
+    bucket_size: 4000
+    refill_rate: 2000
+clients:
+  generator: "python3 experiments/workloads/kv/kv_client.py"
+  instances: 8
+  connections_per_instance: 128
+  remote:
+    host: "211.0.0.102"
+    workdir: "~/MicroSentinel"
+    metrics_dir: "~/MicroSentinel/artifacts/remote"
+  request_mix:
+    get_ratio: 0.95
+    set_ratio: 0.05
+  key_distribution: "zipf"
+  zipf_theta: 1.0
+  load_shape: "closed-loop"
+  target_cpu_utilization: 0.8
+telemetry:
+  throughput_metrics: true
+  latency_percentiles: [50, 95, 99]
+  extra_tags:
+    tenant: "default"

@@ -1,19 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
+#ifndef __TARGET_ARCH_x86_64
+#define __TARGET_ARCH_x86_64
+#endif
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/if_vlan.h>
-#include <linux/in.h>
-#include <linux/in6.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
 #include "ms_common.h"
 
-char LICENSE[] SEC("license") = "Apache-2.0";
+#ifndef NULL
+#define NULL 0
+#endif
+
+#ifndef offsetof
+#define offsetof(TYPE, MEMBER) __builtin_offsetof(TYPE, MEMBER)
+#endif
+#ifndef ETH_P_IP
+#define ETH_P_IP 0x0800
+#endif
+#ifndef ETH_P_IPV6
+#define ETH_P_IPV6 0x86DD
+#endif
+#ifndef ETH_P_8021Q
+#define ETH_P_8021Q 0x8100
+#endif
+#ifndef ETH_P_8021AD
+#define ETH_P_8021AD 0x88A8
+#endif
+#ifndef IPPROTO_TCP
+#define IPPROTO_TCP 6
+#endif
+#ifndef IPPROTO_UDP
+#define IPPROTO_UDP 17
+#endif
+
+char _license[] SEC("license") = "Dual BSD/GPL";
 
 /* -------------------------------------------------------------------------- */
 /*                                Map Layout                                  */
@@ -42,6 +64,9 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 0);
+    __type(key, __u32);
+    __type(value, __u32);
 } ms_events SEC(".maps");
 
 struct {
@@ -103,14 +128,19 @@ static __always_inline __u64 get_hard_drop_ns(void)
 
 static __always_inline bool allow_sample(__u64 now)
 {
+    bpf_printk("allow_sample: enter now=%llu\n", now);
+    bool allowed = false;
+    __u64 remaining = 0;
     __u32 key = 0;
     struct ms_token_bucket *tb = bpf_map_lookup_elem(&ms_tb, &key);
     __u64 limit = get_tb_limit();
     __u64 hard_drop = get_hard_drop_ns();
     const struct ms_tb_ctrl *ctrl = bpf_map_lookup_elem(&ms_tb_ctrl_map, &key);
 
-    if (!tb)
-        return false;
+    if (!tb) {
+        bpf_printk("allow_sample: missing token bucket state\n");
+        goto out;
+    }
 
     if (ctrl && ctrl->cfg_seq != tb->cfg_seq) {
         tb->cfg_seq = ctrl->cfg_seq;
@@ -137,25 +167,29 @@ static __always_inline bool allow_sample(__u64 now)
         }
     }
 
-    if (hard_drop && tb->last_emit_tsc && now - tb->last_emit_tsc < hard_drop)
-        return false;
+    if (hard_drop && tb->last_emit_tsc && now - tb->last_emit_tsc < hard_drop) {
+        bpf_printk("allow_sample: hard drop window active\n");
+        goto out;
+    }
 
-    if (tb->tokens == 0)
-        return false;
+    if (tb->tokens == 0) {
+        bpf_printk("allow_sample: token bucket empty\n");
+        goto out;
+    }
 
     tb->tokens--;
     tb->last_emit_tsc = now;
-    return true;
+    allowed = true;
+
+out:
+    remaining = tb ? tb->tokens : 0;
+    bpf_printk("allow_sample: exit allowed=%u tokens=%llu\n", allowed, remaining);
+    return allowed;
 }
 
 static __always_inline __u64 load_perf_sample_time(const struct bpf_perf_event_data *ctx)
 {
-    struct perf_sample_data *data = BPF_CORE_READ(ctx, data);
-    if (data) {
-        __u64 ts = BPF_CORE_READ(data, time);
-        if (ts)
-            return ts;
-    }
+    (void)ctx;
     return bpf_ktime_get_ns();
 }
 
@@ -175,6 +209,8 @@ struct ms_flow_tuple {
     __u32 daddr_v4;
     struct ms_ipv6_tuple v6;
 };
+
+static __always_inline __u64 fallback_flow_id(void);
 
 #define MS_FNV64_OFFSET 1469598103934665603ULL
 #define MS_FNV64_PRIME  1099511628211ULL
@@ -284,8 +320,11 @@ static __always_inline int parse_ipv6_tuple(struct sk_buff *skb, bool inner, str
 
     tuple->proto = ip6h.nexthdr;
     tuple->is_ipv6 = 1;
-    bpf_probe_read_kernel(tuple->v6.src, sizeof(tuple->v6.src), &ip6h.saddr.s6_addr32);
-    bpf_probe_read_kernel(tuple->v6.dst, sizeof(tuple->v6.dst), &ip6h.daddr.s6_addr32);
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        tuple->v6.src[i] = ip6h.saddr.in6_u.u6_addr32[i];
+        tuple->v6.dst[i] = ip6h.daddr.in6_u.u6_addr32[i];
+    }
 
     if (!l4_off)
         return 0;
@@ -304,7 +343,10 @@ static __always_inline __u64 calc_flow_hash(struct sk_buff *skb, __u8 direction)
     __u16 protocol = 0;
     bpf_core_read(&protocol, sizeof(protocol), &skb->protocol);
     bool encap = false;
-    bpf_core_read(&encap, sizeof(encap), &skb->encapsulation);
+#if defined(BPF_CORE_READ_BITFIELD_PROBED)
+    if (bpf_core_field_exists(skb->encapsulation))
+        encap = BPF_CORE_READ_BITFIELD_PROBED(skb, encapsulation);
+#endif
 
     struct ms_flow_tuple tuple = {};
     tuple.dir = direction;
@@ -342,9 +384,19 @@ hash_tuple:
 static __always_inline __u32 calc_gso_segs(struct sk_buff *skb)
 {
     __u32 gso_segs = 1;
-    bpf_core_read(&gso_segs, sizeof(gso_segs), &skb->gso_segs);
-    if (gso_segs == 0)
-        gso_segs = 1;
+    unsigned char *head = NULL;
+    sk_buff_data_t end_off = 0;
+
+    bpf_core_read(&head, sizeof(head), &skb->head);
+    bpf_core_read(&end_off, sizeof(end_off), &skb->end);
+    if (!head || end_off == 0)
+        return gso_segs;
+
+    unsigned char *shinfo = head + end_off;
+    __u16 segs = 0;
+    const void *addr = shinfo + offsetof(struct skb_shared_info, gso_segs);
+    if (bpf_probe_read_kernel(&segs, sizeof(segs), addr) == 0 && segs)
+        gso_segs = segs;
     return gso_segs;
 }
 
@@ -408,8 +460,8 @@ static __always_inline int parse_xdp_tuple(struct xdp_md *ctx, struct ms_flow_tu
         tuple->is_ipv6 = 1;
 #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            tuple->v6.src[i] = ip6h->saddr.s6_addr32[i];
-            tuple->v6.dst[i] = ip6h->daddr.s6_addr32[i];
+            tuple->v6.src[i] = ip6h->saddr.in6_u.u6_addr32[i];
+            tuple->v6.dst[i] = ip6h->daddr.in6_u.u6_addr32[i];
         }
         void *l4 = ip6h + 1;
         parse_l4_ports(tuple->proto, l4, data_end, tuple);
@@ -518,9 +570,27 @@ static __always_inline __u64 find_flow_in_history(__u64 ts_begin, __u64 ts_end)
     return best_flow;
 }
 
+static __always_inline __u64 ms_get_attach_cookie(const void *ctx)
+{
+#if defined(BPF_FUNC_get_attach_cookie)
+    return bpf_get_attach_cookie(ctx);
+#else
+    return 0;
+#endif
+}
+
+static __always_inline int ms_get_branch_snapshot(void *entries, __u32 size, __u64 flags)
+{
+#if defined(BPF_FUNC_get_branch_snapshot)
+    return bpf_get_branch_snapshot(entries, size, flags);
+#else
+    return -1;
+#endif
+}
+
 static __always_inline __u32 map_hw_event(const struct bpf_perf_event_data *ctx)
 {
-    __u64 cookie = bpf_get_attach_cookie(ctx);
+    __u64 cookie = ms_get_attach_cookie(ctx);
     if (cookie) {
         struct ms_event_binding *binding = bpf_map_lookup_elem(&ms_event_cookie, &cookie);
         if (binding)
@@ -539,10 +609,13 @@ static __always_inline __u32 map_hw_event(const struct bpf_perf_event_data *ctx)
 
 static __always_inline void capture_flow_ctx(struct sk_buff *skb, __u8 direction)
 {
+    // bpf_printk("capture_flow_ctx: enter dir=%u\n", direction);
     __u32 key = 0;
     struct ms_flow_ctx *ctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
-    if (!ctx)
+    if (!ctx) {
+        // bpf_printk("capture_flow_ctx: ms_curr_ctx lookup failed\n");
         return;
+    }
 
     __u64 now = bpf_ktime_get_ns();
     __u64 flow_id = calc_flow_hash(skb, direction);
@@ -558,14 +631,19 @@ static __always_inline void capture_flow_ctx(struct sk_buff *skb, __u8 direction
     ctx->direction = direction;
 
     ms_hist_push(now, flow_id);
+    // bpf_printk("capture_flow_ctx: exit dir=%u flow=%llu ifindex=%u gso=%u\n",
+            //    direction, flow_id, ifindex, gso_segs);
 }
 
 static __always_inline void capture_flow_ctx_xdp(struct xdp_md *xdp)
 {
+    bpf_printk("capture_flow_ctx_xdp: enter ifindex=%u\n", xdp->ingress_ifindex);
     __u32 key = 0;
     struct ms_flow_ctx *ctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
-    if (!ctx)
+    if (!ctx) {
+        bpf_printk("capture_flow_ctx_xdp: ms_curr_ctx lookup failed\n");
         return;
+    }
 
     __u64 now = bpf_ktime_get_ns();
     ctx->l4_proto = 0;
@@ -578,26 +656,31 @@ static __always_inline void capture_flow_ctx_xdp(struct xdp_md *xdp)
     ctx->direction = 0;
 
     ms_hist_push(now, flow_id);
+    bpf_printk("capture_flow_ctx_xdp: exit flow=%llu ifindex=%u\n", flow_id, xdp->ingress_ifindex);
 }
 
-SEC("fentry/netif_receive_skb")
+SEC("tp_btf/netif_receive_skb")
 int BPF_PROG(ms_ctx_inject, struct sk_buff *skb)
 {
+    // bpf_printk("ms_ctx_inject: enter skb=%p\n", skb);
     capture_flow_ctx(skb, 0);
+    // bpf_printk("ms_ctx_inject: exit\n");
     return 0;
 }
 
-SEC("fentry/dev_queue_xmit")
-int BPF_PROG(ms_ctx_inject_tx, struct sk_buff *skb)
+/* SEC("fentry/dev_queue_xmit")
+int ms_ctx_inject_tx(struct sk_buff *skb)
 {
     capture_flow_ctx(skb, 1);
     return 0;
-}
+} */
 
 SEC("xdp")
 int ms_ctx_inject_xdp(struct xdp_md *ctx)
 {
+    bpf_printk("ms_ctx_inject_xdp: enter ingress_ifindex=%u\n", ctx->ingress_ifindex);
     capture_flow_ctx_xdp(ctx);
+    bpf_printk("ms_ctx_inject_xdp: exit\n");
     return XDP_PASS;
 }
 
@@ -606,27 +689,38 @@ int ms_ctx_inject_xdp(struct xdp_md *ctx)
 /* -------------------------------------------------------------------------- */
 
 SEC("perf_event")
-int BPF_PROG(ms_pmu_handler, struct bpf_perf_event_data *ctx)
+int ms_pmu_handler(struct bpf_perf_event_data *ctx)
 {
-    __u64 sample_ts = load_perf_sample_time(ctx);
-    if (!allow_sample(sample_ts))
-        return 0;
-
-    struct pt_regs *regs = ctx->regs;
-    __u64 ip = regs ? PT_REGS_IP(regs) : 0;
-    __u64 data_addr = ctx->addr;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    __u32 tid = pid_tgid;
-
-    __u32 key = 0;
-    const struct ms_flow_ctx *fctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
-
+    bpf_printk("ms_pmu_handler: entered\n");
+    bool sample_emitted = false;
+    int rc = 0;
     __u64 flow_id = 0;
     __u32 gso = 1;
     __u16 ifindex = 0;
     __u8 proto = 0;
     __u64 ctx_tsc = 0;
+
+    struct pt_regs *regs = NULL;
+    __u64 ip = 0;
+    __u64 data_addr = 0;
+    __u64 pid_tgid = 0;
+    __u32 pid = 0;
+    __u32 tid = 0;
+    const struct ms_flow_ctx *fctx = NULL;
+    __u32 key = 0;
+
+    __u64 sample_ts = load_perf_sample_time(ctx);
+    if (!allow_sample(sample_ts))
+        goto out;
+
+    regs = &ctx->regs;
+    ip = PT_REGS_IP(regs);
+    data_addr = ctx->addr;
+    pid_tgid = bpf_get_current_pid_tgid();
+    pid = pid_tgid >> 32;
+    tid = pid_tgid;
+
+    fctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
 
     if (fctx) {
         flow_id = fctx->flow_id;
@@ -659,7 +753,7 @@ int BPF_PROG(ms_pmu_handler, struct bpf_perf_event_data *ctx)
     sample.lbr_nr = 0;
 
     struct perf_branch_entry stack[MS_LBR_MAX] = {};
-    int lbr_nr = (int)bpf_get_branch_snapshot(&stack, sizeof(stack), 0);
+    int lbr_nr = ms_get_branch_snapshot(&stack, sizeof(stack), 0);
     if (lbr_nr > 0) {
         if (lbr_nr > MS_LBR_MAX)
             lbr_nr = MS_LBR_MAX;
@@ -673,8 +767,17 @@ int BPF_PROG(ms_pmu_handler, struct bpf_perf_event_data *ctx)
         }
     }
 
-    bpf_perf_event_output(ctx, &ms_events, BPF_F_CURRENT_CPU, &sample, sizeof(sample));
-    return 0;
+    if (bpf_perf_event_output(ctx, &ms_events, BPF_F_CURRENT_CPU, &sample, sizeof(sample)) < 0) {
+        bpf_printk("ms_pmu_handler: bpf_perf_event_output failed\n");
+        goto out;
+    }
+
+    sample_emitted = true;
+    bpf_printk("ms_pmu_handler: sample output success flow_id=%llu pid=%u tid=%u ip=0x%llx\n", flow_id, pid, tid, ip);
+
+out:
+    bpf_printk("ms_pmu_handler: exit emitted=%u flow_id=%llu\n", sample_emitted, flow_id);
+    return rc;
 }
 
 /* -------------------------------------------------------------------------- */

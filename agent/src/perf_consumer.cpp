@@ -31,6 +31,14 @@ constexpr size_t kDefaultRingPages = 8;
 
 #ifdef MS_WITH_LIBBPF
 int PerfEventOpen(perf_event_attr *attr, int pid, int cpu, int group_fd, unsigned long flags) {
+    std::cout << "[PerfCmd] perf_event_open pid=" << pid
+              << " cpu=" << cpu
+              << " type=" << attr->type
+              << " config=0x" << std::hex << attr->config << std::dec
+              << " period=" << attr->sample_period
+              << " precise=" << static_cast<int>(attr->precise_ip)
+              << " flags=0x" << std::hex << flags << std::dec
+              << std::endl;
     return static_cast<int>(syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags));
 }
 #endif
@@ -80,15 +88,21 @@ void PerfConsumer::Start(const std::function<void(const Sample &, const LbrStack
 
 #ifdef MS_WITH_LIBBPF
     if (!cfg_.mock_mode && InitPerfEvents()) {
+        std::cout << "[PerfConsumer] Perf buffers armed on " << cpu_ctxs_.size()
+                  << " CPU(s); streaming real hardware events" << std::endl;
         for (size_t i = 0; i < workers_.size(); ++i) {
             workers_[i].thread = std::thread(&PerfConsumer::RunPerfLoop, this, i);
         }
         if (!workers_.empty())
             return;
+        std::cerr << "[PerfConsumer] No workers available after perf init; falling back to mock mode" << std::endl;
+    } else if (!cfg_.mock_mode) {
+        std::cerr << "[PerfConsumer] Failed to initialize perf events; enabling mock sampling" << std::endl;
     }
 #endif
 
     cfg_.mock_mode = true;
+    std::cout << "[PerfConsumer] Starting mock perf loop (synthetic samples only)" << std::endl;
     mock_thread_ = std::thread(&PerfConsumer::RunMockLoop, this);
 }
 
@@ -137,12 +151,16 @@ void PerfConsumer::RunPerfLoop(size_t worker_idx) {
 
 bool PerfConsumer::InitPerfEvents() {
 #ifdef MS_WITH_LIBBPF
-    if (cfg_.events_map_fd < 0)
+    if (cfg_.events_map_fd < 0) {
+        std::cerr << "[PerfConsumer] ms_events map FD invalid; cannot initialize perf buffers" << std::endl;
         return false;
+    }
 
     auto cpus = ResolveCpus();
-    if (cpus.empty())
+    if (cpus.empty()) {
+        std::cerr << "[PerfConsumer] CPU resolution produced empty list" << std::endl;
         return false;
+    }
 
     bool any = false;
     if (!cfg_.numa_workers)
@@ -154,14 +172,19 @@ bool PerfConsumer::InitPerfEvents() {
             worker_idx = EnsureWorkerForNode(CpuToNode(cpu));
         else
             worker_idx = EnsureWorkerForNode(-1);
-        if (worker_idx == static_cast<size_t>(-1))
+        if (worker_idx == static_cast<size_t>(-1)) {
+            std::cerr << "[PerfConsumer] Failed to provision worker for CPU " << cpu << std::endl;
             continue;
+        }
         any |= SetupCpuContext(cpu, worker_idx);
     }
 
     if (!any) {
+        std::cerr << "[PerfConsumer] No perf CPU contexts initialized successfully" << std::endl;
         ClosePerfEvents();
         return false;
+    }else{
+        std::cout << "[PerfConsumer] Perf CPU contexts initialized successfully" << std::endl;
     }
     return true;
 #else
@@ -198,8 +221,10 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
     if (worker_idx == static_cast<size_t>(-1) || worker_idx >= workers_.size())
         return false;
     auto &worker = workers_[worker_idx];
-    if (worker.epoll_fd < 0)
+    if (worker.epoll_fd < 0) {
+        std::cerr << "[PerfConsumer] Worker epoll FD invalid for CPU " << cpu << std::endl;
         return false;
+    }
 
     perf_event_attr attr{};
     attr.type = PERF_TYPE_SOFTWARE;
@@ -222,6 +247,7 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
     void *base = mmap(nullptr, mmap_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (base == MAP_FAILED) {
         std::perror("mmap");
+        std::cerr << "[PerfConsumer] mmap failed for perf ring on CPU " << cpu << std::endl;
         close(fd);
         return false;
     }
@@ -229,6 +255,7 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
     __u32 key = static_cast<__u32>(cpu);
     if (bpf_map_update_elem(cfg_.events_map_fd, &key, &fd, BPF_ANY) < 0) {
         std::perror("bpf_map_update_elem(ms_events)");
+        std::cerr << "[PerfConsumer] Failed to associate perf FD with ms_events for CPU " << cpu << std::endl;
         munmap(base, mmap_len);
         close(fd);
         return false;
@@ -241,6 +268,7 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
     ev.data.u32 = static_cast<__u32>(ctx_index);
     if (epoll_ctl(worker.epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
         std::perror("epoll_ctl");
+        std::cerr << "[PerfConsumer] epoll_ctl failed while registering CPU " << cpu << std::endl;
         int reset = -1;
         bpf_map_update_elem(cfg_.events_map_fd, &key, &reset, BPF_ANY);
         munmap(base, mmap_len);
@@ -279,7 +307,9 @@ void PerfConsumer::DrainCpu(int index) {
         auto *record = reinterpret_cast<perf_event_header *>(data + (tail & ctx.data_mask));
         if (record->size == 0)
             break;
-
+        std::cout << "[PerfConsumer] Received perf record type " << record->type
+                  << " size " << record->size
+                  << " on CPU " << ctx.cpu << std::endl;
         if (record->type == PERF_RECORD_SAMPLE) {
             void *payload = record + 1;
             size_t payload_size = record->size - sizeof(*record);

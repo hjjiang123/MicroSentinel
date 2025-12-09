@@ -1,0 +1,14 @@
+suite: branch_mispredict
+run_s: 150
+workload: load_balancer
+config: experiments/configs/workloads/lb.yaml
+modes:
+  - microsentinel
+pmu_events:
+  - BR_MISP_RETIRED.ALL_BRANCHES
+  - BR_MISP_EXEC.ALL_BRANCHES
+clients:
+  - name: legacy
+    header_variant: legacy
+  - name: new_proto
+    header_variant: experimental

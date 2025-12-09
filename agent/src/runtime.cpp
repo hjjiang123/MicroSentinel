@@ -105,6 +105,7 @@ AgentRuntime::AgentRuntime(AgentConfig cfg)
     bpf_ = std::make_shared<BpfOrchestrator>(cfg_.perf);
     if (bpf_->Init()) {
 #ifdef MS_WITH_LIBBPF
+        std::cout << "[Runtime] BPF orchestrator initialized; real perf sampling enabled" << std::endl;
         cfg_.perf.mock_mode = false;
         cfg_.perf.events_map_fd = bpf_->EventsMapFd();
         pmu_rotator_ = std::make_unique<PmuRotator>(bpf_, cfg_.perf.rotation_window, [this](double scale) {
@@ -118,6 +119,7 @@ AgentRuntime::AgentRuntime(AgentConfig cfg)
                                bucket_state_.diagnostic_budget,
                                bucket_state_.hard_drop_ns);
     } else {
+        std::cerr << "[Runtime] BPF orchestrator unavailable; enabling mock perf sampling" << std::endl;
         cfg_.perf.mock_mode = true;
     }
 
@@ -142,6 +144,10 @@ AgentRuntime::~AgentRuntime() {
 
 void AgentRuntime::Start() {
     running_.store(true, std::memory_order_relaxed);
+    std::cout << "[Runtime] Starting agent runtime (mode="
+              << (current_mode_ == AgentMode::Diagnostic ? "Diagnostic" : "Sentinel")
+              << ", anomaly=" << (anomaly_monitor_ ? "enabled" : "disabled")
+              << ", mock_perf=" << (cfg_.perf.mock_mode ? "true" : "false") << ")" << std::endl;
     metrics_->Start();
     ch_sink_->Start();
     if (control_)
@@ -405,7 +411,16 @@ void AgentRuntime::HandleAnomaly(const AnomalySignal &signal) {
 }
 
 void AgentRuntime::ApplyMode(AgentMode mode) {
+    auto ModeName = [](AgentMode m) {
+        return (m == AgentMode::Diagnostic) ? "Diagnostic" : "Sentinel";
+    };
+    AgentMode previous = current_mode_;
     current_mode_ = mode;
+    if (previous != mode)
+        std::cout << "[Runtime] Transitioning agent mode from " << ModeName(previous)
+                  << " to " << ModeName(mode) << std::endl;
+    else
+        std::cout << "[Runtime] Reapplying agent mode: " << ModeName(mode) << std::endl;
     mode_controller_->Force(mode);
     if (bpf_ && bpf_->Ready()) {
         if (bpf_->SwitchMode(mode) && pmu_rotator_ && pmu_rotator_started_)

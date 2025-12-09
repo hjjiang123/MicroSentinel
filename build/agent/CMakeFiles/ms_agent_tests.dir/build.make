@@ -183,7 +183,7 @@ agent/ms_agent_tests: agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monitor.cpp
 agent/ms_agent_tests: agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o
 agent/ms_agent_tests: agent/CMakeFiles/ms_agent_core.dir/src/json.cpp.o
 agent/ms_agent_tests: agent/CMakeFiles/ms_agent_tests.dir/build.make
-agent/ms_agent_tests: /usr/lib/x86_64-linux-gnu/libz.so
+agent/ms_agent_tests: /home/hjjiang/tools/libbpf/src/build/root/usr/lib64/libbpf.so
 agent/ms_agent_tests: agent/CMakeFiles/ms_agent_tests.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/hjjiang/MicroSentinel/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking CXX executable ms_agent_tests"
 	cd /home/hjjiang/MicroSentinel/build/agent && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/ms_agent_tests.dir/link.txt --verbose=$(VERBOSE)

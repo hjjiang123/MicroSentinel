@@ -1,0 +1,50 @@
+# Shared hardware, OS, and software stack configuration for MicroSentinel evaluations.
+# Replace angle-bracket placeholders with the concrete values used in your lab notebook
+# so the YAML can be versioned alongside collected results.
+hardware:
+  vendor_model: "<Vendor Model>"
+  sockets: 2
+  cpu_model: "Intel Xeon Gold <model>"
+  cores_per_socket: <N1>
+  threads_per_socket: <N>
+  hyper_threading_enabled: true  # set to false if HT is disabled
+  base_frequency_ghz: <freq>
+  turbo_enabled: false
+  memory_gib: <M>
+  memory_type: "DDR4"
+  memory_channels_per_socket: 6
+  numa_nodes: 2
+  nic_model: "<NIC model>"
+  nic_speed_gbps: 100
+  nic_rss_queues: <Q>
+  rtt_us: <X>
+os:
+  distribution: "Ubuntu"
+  version: "22.04"
+  kernel: "5.15.0-custom"
+  kernel_config:
+    CONFIG_BPF: y
+    CONFIG_BPF_SYSCALL: y
+    CONFIG_DEBUG_INFO_BTF: y
+    CONFIG_KPROBE_EVENTS: y
+    CONFIG_FTRACE_SYSCALLS: y
+  boot_params:
+    - "intel_pstate=disable"
+    - "nosmt=off"
+  sysctls:
+    kernel.numa_balancing: 0
+    kernel.perf_event_paranoid: -1
+software_stack:
+  cmake: "3.25"
+  gcc: "12.1"
+  clang: "16.0"
+  libbpf: "1.3"
+  libpfm: "4.13"
+  libelf: "0.188"
+  libdw: "0.189"
+  libunwind: "1.6"
+  perf: "5.15"
+  bpftool: "v7.2"
+notes:
+  - "Capture `numactl --hardware` output in artifacts/platform/*.txt"
+  - "Record `uname -a` and `/proc/cpuinfo` diff in the lab book"

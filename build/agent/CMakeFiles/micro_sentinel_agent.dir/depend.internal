@@ -27,4 +27,9 @@ agent/CMakeFiles/micro_sentinel_agent.dir/src/main.cpp.o
  ../agent/include/micro_sentinel/symbolizer.h
  ../agent/include/micro_sentinel/tsc_calibrator.h
  ../bpf/ms_common.h
+ ../bpf/vmlinux.h
  /home/hjjiang/MicroSentinel/agent/src/main.cpp
+ /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf.h
+ /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_common.h
+ /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_legacy.h
+ /home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf/libbpf_version.h

@@ -1,0 +1,81 @@
+suite: overhead
+run_s: 300
+warmup_s: 30
+repetitions: 3
+modes: [baseline, perf, microsentinel]
+overrides:
+  instrumentation:
+    pmu_events: "cycles,LLC-load-misses"
+    delta_us: 10
+  annotations:
+    suite: overhead
+workloads:
+  - name: kv
+    config: experiments/configs/workloads/kv.yaml
+    modes: [baseline, perf, microsentinel]
+    parameters:
+      delta_values_us: [5, 10, 20]
+      pmu_events:
+        - ["cycles", "LLC-load-misses"]
+        - ["MEM_LOAD_RETIRED.L3_MISS", "OFFCORE_RESPONSE.ALL_RFO"]
+      rate_scan:
+        samples_per_core: [500, 1000, 2000]
+      repetitions: 3
+    overrides:
+      server:
+        implementation: memcached
+        binary: memcached
+        numa_policy: "numactl --cpunodebind=0 --membind=0"
+      clients:
+        implementation: memtier
+        remote:
+          host: control_user@client-host
+          workdir: ~/kv_load
+        generator: memtier_benchmark
+        connections_per_instance: 64
+        options:
+          ratio: "95:5"
+          data_size: 256
+  - name: load_balancer
+    config: experiments/configs/workloads/lb.yaml
+    modes: [baseline, perf, microsentinel]
+    parameters:
+      pmu_events:
+        - ["cycles", "LLC-load-misses"]
+        - ["BR_MISP_RETIRED.ALL_BRANCHES"]
+      rate_scan:
+        samples_per_core: [500, 1000, 2000]
+        event_sets:
+          - ["cycles", "LLC-load-misses"]
+          - ["BR_MISP_RETIRED.ALL_BRANCHES"]
+    overrides:
+      lb_node:
+        implementation: haproxy
+        binary: haproxy
+        numa_policy: "numactl --cpunodebind=0 --membind=0"
+      clients:
+        implementation: builtin
+        remote:
+          host: control_user@client-host
+          workdir: ~/lb_load
+        generator: python3 experiments/workloads/lb/lb_client.py
+        flows: 512
+  - name: nfv_service_chain
+    config: experiments/configs/workloads/nfv.yaml
+    modes: [baseline, perf, microsentinel]
+    parameters:
+      pmu_events:
+        - ["LLC-load-misses"]
+        - ["MEM_LOAD_RETIRED.L3_MISS"]
+      rate_scan:
+        samples_per_core: [500, 1000, 2000]
+    overrides:
+      traffic_generator:
+        implementation: pktgen
+        remote:
+          host: control_user@client-host
+          workdir: ~/pktgen_runs
+        binary: /opt/pktgen/run_pktgen.sh
+        interface: ens6f0
+        rate_pps: 2000000
+        packet_size: 64

@@ -10,11 +10,13 @@ agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../agen
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../agent/include/micro_sentinel/remote_dram_analyzer.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_monitoring_targets.cpp.o: ../agent/tests/test_monitoring_targets.cpp
 
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_skew_adjuster.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_skew_adjuster.cpp.o: ../agent/include/micro_sentinel/skew_adjuster.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_skew_adjuster.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_tests.dir/tests/test_skew_adjuster.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_skew_adjuster.cpp.o: ../agent/tests/test_skew_adjuster.cpp
 
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../agent/include/micro_sentinel/aggregator.h
@@ -27,5 +29,6 @@ agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../agent/incl
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../agent/include/micro_sentinel/sample.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../agent/include/micro_sentinel/tsc_calibrator.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../bpf/ms_common.h
+agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_tests.dir/tests/test_token_bucket.cpp.o: ../agent/tests/test_token_bucket.cpp
 

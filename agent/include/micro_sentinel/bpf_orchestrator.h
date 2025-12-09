@@ -46,11 +46,11 @@ private:
 #ifdef MS_WITH_LIBBPF
     struct bpf_object *obj_{nullptr};
     struct bpf_program *ctx_prog_{nullptr};
-    struct bpf_program *ctx_tx_prog_{nullptr};
+    /* struct bpf_program *ctx_tx_prog_{nullptr}; */
     struct bpf_program *xdp_prog_{nullptr};
     struct bpf_program *pmu_prog_{nullptr};
     struct bpf_link *ctx_link_{nullptr};
-    struct bpf_link *ctx_tx_link_{nullptr};
+    /* struct bpf_link *ctx_tx_link_{nullptr}; */
     std::vector<struct bpf_link *> xdp_links_;
     struct bpf_map *events_map_{nullptr};
     struct bpf_map *cookie_map_{nullptr};
@@ -83,6 +83,7 @@ private:
     bool AttachNetPrograms();
     bool AttachXdpPrograms();
     bool AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &groups);
+    bool AttachPerfGroupsLegacy(const std::vector<PmuGroupConfig> &groups);
     void DetachPerfGroupsLocked();
     bool ConfigureTokenBucket(uint64_t samples_per_sec, uint64_t hard_drop_ns);
     bool WriteCookie(__u64 cookie, ms_pmu_event_type evt);

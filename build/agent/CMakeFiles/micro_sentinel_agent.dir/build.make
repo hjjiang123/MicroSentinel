@@ -138,7 +138,7 @@ agent/micro_sentinel_agent: agent/CMakeFiles/ms_agent_core.dir/src/anomaly_monit
 agent/micro_sentinel_agent: agent/CMakeFiles/ms_agent_core.dir/src/tsc_calibrator.cpp.o
 agent/micro_sentinel_agent: agent/CMakeFiles/ms_agent_core.dir/src/json.cpp.o
 agent/micro_sentinel_agent: agent/CMakeFiles/micro_sentinel_agent.dir/build.make
-agent/micro_sentinel_agent: /usr/lib/x86_64-linux-gnu/libz.so
+agent/micro_sentinel_agent: /home/hjjiang/tools/libbpf/src/build/root/usr/lib64/libbpf.so
 agent/micro_sentinel_agent: agent/CMakeFiles/micro_sentinel_agent.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/hjjiang/MicroSentinel/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable micro_sentinel_agent"
 	cd /home/hjjiang/MicroSentinel/build/agent && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/micro_sentinel_agent.dir/link.txt --verbose=$(VERBOSE)
