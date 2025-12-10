@@ -1,0 +1,26 @@
+[
+	{
+		"id": 1,
+		"title": "Identify important functions",
+		"description": "Scan project to decide which functions need entry/exit logging",
+		"status": "completed"
+	},
+	{
+		"id": 2,
+		"title": "Add entry logs",
+		"description": "Insert entry print statements into selected functions",
+		"status": "completed"
+	},
+	{
+		"id": 3,
+		"title": "Add exit logs",
+		"description": "Add exit print statements before returning in those functions",
+		"status": "completed"
+	},
+	{
+		"id": 4,
+		"title": "Verify build",
+		"description": "Rebuild to ensure added logs compile",
+		"status": "not-started"
+	}
+]

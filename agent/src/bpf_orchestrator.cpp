@@ -8,6 +8,7 @@
 #include <limits>
 #include <net/if.h>
 
+#include "micro_sentinel/scope_logger.h"
 #include "ms_common.h"
 
 #ifdef MS_WITH_LIBBPF
@@ -129,14 +130,14 @@ bool BpfOrchestrator::Init() {
 #ifdef MS_WITH_LIBBPF
 
 static int PerfEventOpen(perf_event_attr *attr, int pid, int cpu, int group_fd, unsigned long flags) {
-    std::cout << "[PerfCmd] perf_event_open pid=" << pid
-              << " cpu=" << cpu
-              << " type=" << attr->type
-              << " config=0x" << std::hex << attr->config << std::dec
-              << " period=" << attr->sample_period
-              << " precise=" << static_cast<int>(attr->precise_ip)
-              << " flags=0x" << std::hex << flags << std::dec
-              << std::endl;
+    // std::cout << "[PerfCmd] perf_event_open pid=" << pid
+            //   << " cpu=" << cpu
+            //   << " type=" << attr->type
+            //   << " config=0x" << std::hex << attr->config << std::dec
+            //   << " period=" << attr->sample_period
+            //   << " precise=" << static_cast<int>(attr->precise_ip)
+            //   << " flags=0x" << std::hex << flags << std::dec
+            //   << std::endl;
     return static_cast<int>(syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags));
 }
 
@@ -307,6 +308,7 @@ bool BpfOrchestrator::AttachXdpPrograms() {
 }
 
 bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &groups) {
+    // MS_SCOPE_LOG("Bpf_Orchestrator::AttachPerfGroupsLocked");
     DetachPerfGroupsLocked();
     if (!pmu_prog_) {
         std::cerr << "[BpfOrchestrator] PMU handler program missing" << std::endl;
@@ -314,15 +316,20 @@ bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &
     }
 
 #if !MS_LIBBPF_HAS_PERF_OPTS
+    // MS_SCOPE_LOG("Bpf_Orchestrator::AttachPerfGroupsLocked::AttachPerfGroupsLegacy");
     return AttachPerfGroupsLegacy(groups);
 #else
+    // MS_SCOPE_LOG("Bpf_Orchestrator::AttachPerfGroupsLocked::AttachPerfGroupsLocked");
     if (!cookie_supported_)
         return AttachPerfGroupsLegacy(groups);
-
+    // MS_SCOPE_LOG("Bpf_Orchestrator::AttachPerfGroupsLocked::AttachPerfGroupsLocked::MainLoop");
     __u64 cookie = next_cookie_;
     size_t limit = max_events_per_group_;
     bool limit_events = (limit != static_cast<size_t>(-1));
-
+    // std::cout << "[BpfOrchestrator] Attaching PMU groups with "
+            //   << (cookie_supported_ ? "cookie support" : "legacy mode") << std::endl;
+    // std::cout << "[BpfOrchestrator] max_events_per_group = "
+            //   << (limit_events ? std::to_string(limit) : "unlimited") << std::endl;
     for (const auto &group : groups) {
         size_t events_attached = 0;
         for (const auto &evt : group.events) {
@@ -339,6 +346,8 @@ bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &
                 attr.exclude_idle = 1;
                 attr.precise_ip = evt.precise ? 2 : 0;
                 attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_ADDR;
+                attr.sample_type |= PERF_SAMPLE_BRANCH_STACK;
+                attr.branch_sample_type = PERF_SAMPLE_BRANCH_USER | PERF_SAMPLE_BRANCH_CALL_STACK;
 
                 int fd = PerfEventOpen(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
                 if (fd < 0) {
@@ -349,6 +358,7 @@ bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &
                 bpf_perf_event_opts opts{};
                 opts.sz = sizeof(opts);
                 opts.bpf_cookie = cookie;
+                // MS_SCOPE_LOG("Bpf_Orchestrator::AttachPerfGroupsLocked::AttachPerfGroupsLocked::MainLoop::AttachPerfEventOpts");
                 auto *link = bpf_program__attach_perf_event_opts(pmu_prog_, fd, &opts);
                 long err = libbpf_get_error(link);
                 if (err) {
@@ -370,7 +380,13 @@ bool BpfOrchestrator::AttachPerfGroupsLocked(const std::vector<PmuGroupConfig> &
                     close(fd);
                     continue;
                 }
-
+                // std::cout<<"event type "
+                //           <<static_cast<int>(evt.logical)
+                //           <<" cookie "
+                //           <<cookie
+                //           <<" cpu "
+                //           <<cpu
+                //           <<std::endl;
                 perf_links_.push_back(PerfAttach{fd, link, cookie});
                 ++cookie;
             }
@@ -405,6 +421,8 @@ bool BpfOrchestrator::AttachPerfGroupsLegacy(const std::vector<PmuGroupConfig> &
         attr.exclude_idle = 1;
         attr.precise_ip = evt.precise ? 2 : 0;
         attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_ADDR;
+        attr.sample_type |= PERF_SAMPLE_BRANCH_STACK;
+        attr.branch_sample_type = PERF_SAMPLE_BRANCH_USER | PERF_SAMPLE_BRANCH_CALL_STACK;
 
         int fd = PerfEventOpen(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
         if (fd < 0) {
@@ -513,6 +531,7 @@ void BpfOrchestrator::UpdateGroupConfig(const std::vector<PmuGroupConfig> *senti
 }
 
 void BpfOrchestrator::SetMaxEventsPerGroup(size_t limit) {
+    // std::cout<<"limit:"<<limit<<std::endl;
 #ifdef MS_WITH_LIBBPF
     std::lock_guard<std::mutex> lk(mu_);
     if (limit == 0)

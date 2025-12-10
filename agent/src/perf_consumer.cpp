@@ -11,6 +11,8 @@
 #include <sstream>
 #include <thread>
 
+#include "micro_sentinel/scope_logger.h"
+
 #ifdef MS_WITH_LIBBPF
 extern "C" {
 #include <bpf/bpf.h>
@@ -29,16 +31,17 @@ namespace {
 
 constexpr size_t kDefaultRingPages = 8;
 
+
 #ifdef MS_WITH_LIBBPF
 int PerfEventOpen(perf_event_attr *attr, int pid, int cpu, int group_fd, unsigned long flags) {
-    std::cout << "[PerfCmd] perf_event_open pid=" << pid
-              << " cpu=" << cpu
-              << " type=" << attr->type
-              << " config=0x" << std::hex << attr->config << std::dec
-              << " period=" << attr->sample_period
-              << " precise=" << static_cast<int>(attr->precise_ip)
-              << " flags=0x" << std::hex << flags << std::dec
-              << std::endl;
+    // std::cout << "[PerfCmd] perf_event_open pid=" << pid
+    //           << " cpu=" << cpu
+    //           << " type=" << attr->type
+    //           << " config=0x" << std::hex << attr->config << std::dec
+    //           << " period=" << attr->sample_period
+    //           << " precise=" << static_cast<int>(attr->precise_ip)
+    //           << " flags=0x" << std::hex << flags << std::dec
+    //           << std::endl;
     return static_cast<int>(syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags));
 }
 #endif
@@ -83,6 +86,7 @@ PerfConsumer::~PerfConsumer() {
 }
 
 void PerfConsumer::Start(const std::function<void(const Sample &, const LbrStack &)> &cb) {
+    MS_SCOPE_LOG("PerfConsumer::Start");
     callback_ = cb;
     running_.store(true, std::memory_order_relaxed);
 
@@ -107,6 +111,7 @@ void PerfConsumer::Start(const std::function<void(const Sample &, const LbrStack
 }
 
 void PerfConsumer::Stop() {
+    MS_SCOPE_LOG("PerfConsumer::Stop");
     bool expected = true;
     if (!running_.compare_exchange_strong(expected, false))
         running_.store(false, std::memory_order_relaxed);
@@ -121,23 +126,27 @@ void PerfConsumer::Stop() {
 
 void PerfConsumer::RunPerfLoop(size_t worker_idx) {
 #ifdef MS_WITH_LIBBPF
+    MS_SCOPE_LOG("PerfConsumer::RunPerfLoop");
     if (worker_idx >= workers_.size())
         return;
     auto &worker = workers_[worker_idx];
     if (worker.epoll_fd < 0)
         return;
-
     constexpr int kMaxEvents = 16;
     epoll_event events[kMaxEvents];
     while (running_.load(std::memory_order_relaxed)) {
+        // MS_SCOPE_LOG("PerfConsumer::RunPerfLoop:epoll_wait:enter");
         int n = epoll_wait(worker.epoll_fd, events, kMaxEvents, 250);
         if (n < 0) {
+            // MS_SCOPE_LOG("PerfConsumer::RunPerfLoop:epoll_wait:error");
             if (errno == EINTR)
                 continue;
             std::perror("epoll_wait");
             break;
         }
+        // MS_SCOPE_LOG("PerfConsumer::RunPerfLoop:epoll_wait:events");
         if (n == 0)
+            // MS_SCOPE_LOG("PerfConsumer::RunPerfLoop:epoll_wait:timeout");
             continue;
         for (int i = 0; i < n; ++i) {
             int idx = static_cast<int>(events[i].data.u32);
@@ -151,6 +160,7 @@ void PerfConsumer::RunPerfLoop(size_t worker_idx) {
 
 bool PerfConsumer::InitPerfEvents() {
 #ifdef MS_WITH_LIBBPF
+    MS_SCOPE_LOG("PerfConsumer::InitPerfEvents");
     if (cfg_.events_map_fd < 0) {
         std::cerr << "[PerfConsumer] ms_events map FD invalid; cannot initialize perf buffers" << std::endl;
         return false;
@@ -183,7 +193,7 @@ bool PerfConsumer::InitPerfEvents() {
         std::cerr << "[PerfConsumer] No perf CPU contexts initialized successfully" << std::endl;
         ClosePerfEvents();
         return false;
-    }else{
+    } else {
         std::cout << "[PerfConsumer] Perf CPU contexts initialized successfully" << std::endl;
     }
     return true;
@@ -193,6 +203,7 @@ bool PerfConsumer::InitPerfEvents() {
 }
 
 void PerfConsumer::RunMockLoop() {
+    MS_SCOPE_LOG("PerfConsumer::RunMockLoop");
     std::mt19937_64 rng{std::random_device{}()};
     std::uniform_int_distribution<uint32_t> flow_dist(1, 1'000'000);
     std::uniform_int_distribution<uint32_t> pmu_dist(MS_EVT_L3_MISS, MS_EVT_REMOTE_DRAM);
@@ -218,6 +229,7 @@ void PerfConsumer::RunMockLoop() {
 
 #ifdef MS_WITH_LIBBPF
 bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
+    // MS_SCOPE_LOG("PerfConsumer::SetupCpuContext");
     if (worker_idx == static_cast<size_t>(-1) || worker_idx >= workers_.size())
         return false;
     auto &worker = workers_[worker_idx];
@@ -237,7 +249,7 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
 
     int fd = PerfEventOpen(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
     if (fd < 0) {
-        std::perror("perf_event_open");
+        std::perror("perf_event_open failed");
         return false;
     }
 
@@ -289,6 +301,7 @@ bool PerfConsumer::SetupCpuContext(int cpu, size_t worker_idx) {
 }
 
 void PerfConsumer::DrainCpu(int index) {
+    // MS_SCOPE_LOG("PerfConsumer::DrainCpu");
     if (index < 0 || static_cast<size_t>(index) >= cpu_ctxs_.size())
         return;
     auto &ctx = cpu_ctxs_[index];
@@ -305,15 +318,20 @@ void PerfConsumer::DrainCpu(int index) {
             break;
 
         auto *record = reinterpret_cast<perf_event_header *>(data + (tail & ctx.data_mask));
+        
         if (record->size == 0)
             break;
-        std::cout << "[PerfConsumer] Received perf record type " << record->type
-                  << " size " << record->size
-                  << " on CPU " << ctx.cpu << std::endl;
+        
         if (record->type == PERF_RECORD_SAMPLE) {
-            void *payload = record + 1;
-            size_t payload_size = record->size - sizeof(*record);
-            DispatchSample(payload, payload_size);
+            size_t raw_bytes = record->size - sizeof(*record);
+            if (raw_bytes > sizeof(uint32_t)) {
+                auto *raw_size = reinterpret_cast<uint32_t *>(record + 1);
+                size_t declared = *raw_size;
+                size_t avail = raw_bytes - sizeof(uint32_t);
+                size_t payload_size = std::min<size_t>(declared, avail);
+                void *payload = reinterpret_cast<char *>(raw_size + 1);
+                DispatchSample(payload, payload_size);
+            }
         } else if (record->type == PERF_RECORD_LOST) {
             struct LostPayload {
                 uint64_t id;
@@ -330,10 +348,13 @@ void PerfConsumer::DrainCpu(int index) {
 }
 
 void PerfConsumer::DispatchSample(const void *data, size_t size) {
+    // MS_SCOPE_LOG("PerfConsumer::DispatchSample");
     if (!callback_ || size < sizeof(Sample))
         return;
     Sample sample{};
+    // std::cout<< "DispatchSample called with size: " << size << std::endl;
     std::memcpy(&sample, data, std::min<size_t>(sizeof(Sample), size));
+
     LbrStack stack;
     if (sample.lbr_nr > 0 && sample.lbr_nr <= MS_LBR_MAX) {
         stack.resize(sample.lbr_nr);
@@ -344,6 +365,7 @@ void PerfConsumer::DispatchSample(const void *data, size_t size) {
 }
 
 void PerfConsumer::TearDownCpuContext(CpuContext &ctx) {
+    MS_SCOPE_LOG("PerfConsumer::TearDownCpuContext");
     if (ctx.fd >= 0) {
         __u32 key = static_cast<__u32>(ctx.cpu);
         int dummy = -1;
@@ -359,7 +381,7 @@ void PerfConsumer::TearDownCpuContext(CpuContext &ctx) {
 }
 
 void PerfConsumer::ClosePerfEvents() {
-#ifdef MS_WITH_LIBBPF
+    MS_SCOPE_LOG("PerfConsumer::ClosePerfEvents");
     for (auto &ctx : cpu_ctxs_)
         TearDownCpuContext(ctx);
     cpu_ctxs_.clear();
@@ -370,11 +392,10 @@ void PerfConsumer::ClosePerfEvents() {
         }
     }
     workers_.clear();
-#endif
 }
 
 size_t PerfConsumer::EnsureWorkerForNode(int node) {
-#ifdef MS_WITH_LIBBPF
+    // MS_SCOPE_LOG("PerfConsumer::EnsureWorkerForNode");
     for (size_t i = 0; i < workers_.size(); ++i) {
         if (workers_[i].node == node)
             return i;
@@ -388,19 +409,14 @@ size_t PerfConsumer::EnsureWorkerForNode(int node) {
     }
     workers_.push_back(std::move(worker));
     return workers_.size() - 1;
-#else
-    (void)node;
-    return static_cast<size_t>(-1);
-#endif
 }
 
 void PerfConsumer::StopWorkers() {
-#ifdef MS_WITH_LIBBPF
+    MS_SCOPE_LOG("PerfConsumer::StopWorkers");
     for (auto &worker : workers_) {
         if (worker.thread.joinable())
             worker.thread.join();
     }
-#endif
 }
 
 int PerfConsumer::CpuToNode(int cpu) const {

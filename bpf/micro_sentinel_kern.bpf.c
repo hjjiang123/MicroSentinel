@@ -691,7 +691,7 @@ int ms_ctx_inject_xdp(struct xdp_md *ctx)
 SEC("perf_event")
 int ms_pmu_handler(struct bpf_perf_event_data *ctx)
 {
-    bpf_printk("ms_pmu_handler: entered\n");
+    bpf_printk("ms_pmu_handler: enter\n");
     bool sample_emitted = false;
     int rc = 0;
     __u64 flow_id = 0;
@@ -764,6 +764,7 @@ int ms_pmu_handler(struct bpf_perf_event_data *ctx)
                 break;
             sample.lbr[i].from = stack[i].from;
             sample.lbr[i].to = stack[i].to;
+            bpf_printk("ms_pmu_handler: LBR from=0x%llx to=0x%llx\n", stack[i].from, stack[i].to);
         }
     }
 

@@ -8,6 +8,7 @@
 #include <limits>
 #include <sstream>
 
+#include "micro_sentinel/scope_logger.h"
 #include "micro_sentinel/bucket_update.h"
 #include "micro_sentinel/interference.h"
 
@@ -161,6 +162,7 @@ void AgentRuntime::Start() {
             pmu_rotator_started_ = true;
         }
     }
+    MS_SCOPE_LOG("AgentRuntime::Start::AfterBpfSetup");
     consumer_->Start([this](const Sample &sample, const LbrStack &lbr) { HandleSample(sample, lbr); });
     flush_thread_ = std::thread(&AgentRuntime::FlushLoop, this);
 }
@@ -194,6 +196,7 @@ void AgentRuntime::Stop() {
 }
 
 void AgentRuntime::HandleSample(const Sample &sample, const LbrStack &lbr) {
+    // MS_SCOPE_LOG("AgentRuntime::HandleSample");
     Sample normalized = sample;
     if (tsc_calibrator_)
         normalized.tsc = tsc_calibrator_->Normalize(sample.cpu, sample.tsc);
@@ -210,12 +213,12 @@ void AgentRuntime::HandleSample(const Sample &sample, const LbrStack &lbr) {
 }
 
 void AgentRuntime::EmitReadySample(Sample sample, LbrStack stack) {
+    // MS_SCOPE_LOG("AgentRuntime::EmitReadySample");
     if (target_manager_ && !target_manager_->Allow(sample))
         return;
-
+    // MS_SCOPE_LOG("AgentRuntime::EmitReadySample::AfterTargetCheck");
     if (remote_dram_analyzer_)
         remote_dram_analyzer_->Observe(sample);
-
     double norm = aggregator_->SampleScale();
     if (sample.gso_segs > 1)
         norm /= static_cast<double>(sample.gso_segs);
@@ -345,7 +348,7 @@ void AgentRuntime::RunSingleFlushCycle(std::chrono::milliseconds interval) {
     auto new_objects = symbolizer_->ConsumeDataObjects();
     for (const auto &obj : new_objects)
         ch_sink_->EnqueueDataObject(obj);
-
+    // std::cout<< "Flushed " << flushed_samples << " samples" << std::endl;
     if (flushed_samples > 0) {
         double seconds = static_cast<double>(interval.count()) / 1000.0;
         double samples_per_sec = flushed_samples / seconds;
@@ -353,6 +356,10 @@ void AgentRuntime::RunSingleFlushCycle(std::chrono::milliseconds interval) {
         double budget = (current_mode_ == AgentMode::Sentinel) ? static_cast<double>(cfg_.perf.sentinel_sample_budget)
                                                               : static_cast<double>(cfg_.perf.diagnostic_sample_budget);
         double ratio = budget > 0.0 ? samples_per_sec / budget : 1.0;
+        std::cout << "[Runtime] Flush cycle: flushed " << flushed_samples
+                  << " samples (" << static_cast<uint64_t>(samples_per_sec)
+                  << " samples/sec), budget ratio=" << std::fixed << std::setprecision(3)
+                  << ratio << std::endl;
         MaybeAdjustSafety(ratio);
         AgentMode updated = mode_controller_->Update(ratio);
         if (updated != current_mode_)

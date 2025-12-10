@@ -58,14 +58,6 @@ string
 micro_sentinel/config.h
 ../agent/include/micro_sentinel/micro_sentinel/config.h
 
-../agent/include/micro_sentinel/control_messages.h
-vector
--
-string
--
-micro_sentinel/config.h
-../agent/include/micro_sentinel/micro_sentinel/config.h
-
 ../agent/include/micro_sentinel/interference.h
 cstdint
 -
@@ -84,34 +76,6 @@ micro_sentinel/anomaly.h
 micro_sentinel/config.h
 ../agent/include/micro_sentinel/micro_sentinel/config.h
 
-../agent/include/micro_sentinel/monitoring_targets.h
-cstdint
--
-mutex
--
-string
--
-unordered_set
--
-vector
--
-micro_sentinel/control_messages.h
-../agent/include/micro_sentinel/micro_sentinel/control_messages.h
-micro_sentinel/sample.h
-../agent/include/micro_sentinel/micro_sentinel/sample.h
-
-../agent/include/micro_sentinel/remote_dram_analyzer.h
-cstdint
--
-functional
--
-mutex
--
-unordered_map
--
-micro_sentinel/sample.h
-../agent/include/micro_sentinel/micro_sentinel/sample.h
-
 ../agent/include/micro_sentinel/sample.h
 cstdint
 -
@@ -119,20 +83,6 @@ vector
 -
 ms_common.h
 ../agent/include/micro_sentinel/ms_common.h
-
-../agent/include/micro_sentinel/skew_adjuster.h
-cstdint
--
-deque
--
-functional
--
-mutex
--
-vector
--
-micro_sentinel/sample.h
-../agent/include/micro_sentinel/micro_sentinel/sample.h
 
 ../agent/include/micro_sentinel/tsc_calibrator.h
 cstdint
@@ -153,26 +103,6 @@ vmlinux.h
 ../bpf/vmlinux.h
 
 ../bpf/vmlinux.h
-
-/home/hjjiang/MicroSentinel/agent/tests/test_monitoring_targets.cpp
-cassert
--
-filesystem
--
-fstream
--
-micro_sentinel/monitoring_targets.h
-/home/hjjiang/MicroSentinel/agent/tests/micro_sentinel/monitoring_targets.h
-micro_sentinel/remote_dram_analyzer.h
-/home/hjjiang/MicroSentinel/agent/tests/micro_sentinel/remote_dram_analyzer.h
-
-/home/hjjiang/MicroSentinel/agent/tests/test_skew_adjuster.cpp
-cassert
--
-vector
--
-micro_sentinel/skew_adjuster.h
-/home/hjjiang/MicroSentinel/agent/tests/micro_sentinel/skew_adjuster.h
 
 /home/hjjiang/MicroSentinel/agent/tests/test_token_bucket.cpp
 cassert

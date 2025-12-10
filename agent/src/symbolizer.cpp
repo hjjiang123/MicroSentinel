@@ -4,10 +4,12 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <iostream>
 
 namespace micro_sentinel {
 
@@ -164,7 +166,14 @@ CodeLocation Symbolizer::SymbolizeAddress(const MemoryRegion &region, uint64_t i
         auto colon = file_line.rfind(':');
         if (colon != std::string::npos) {
             loc.source_file = file_line.substr(0, colon);
-            loc.line = std::stoi(file_line.substr(colon + 1));
+            std::string line_part = file_line.substr(colon + 1);
+            auto first_digit = line_part.find_first_not_of(' ');
+            if (first_digit != std::string::npos)
+                line_part.erase(0, first_digit);
+            char *endptr = nullptr;
+            long parsed = std::strtol(line_part.c_str(), &endptr, 10);
+            if (endptr && endptr != line_part.c_str())
+                loc.line = static_cast<int>(parsed);
         } else {
             loc.source_file = file_line;
         }

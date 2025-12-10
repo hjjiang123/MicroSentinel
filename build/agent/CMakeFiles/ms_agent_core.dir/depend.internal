@@ -22,6 +22,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o
  ../agent/include/micro_sentinel/bpf_orchestrator.h
  ../agent/include/micro_sentinel/config.h
  ../agent/include/micro_sentinel/mode_controller.h
+ ../agent/include/micro_sentinel/scope_logger.h
  ../bpf/ms_common.h
  ../bpf/vmlinux.h
  /home/hjjiang/MicroSentinel/agent/src/bpf_orchestrator.cpp
@@ -105,6 +106,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o
  ../agent/include/micro_sentinel/config.h
  ../agent/include/micro_sentinel/perf_consumer.h
  ../agent/include/micro_sentinel/sample.h
+ ../agent/include/micro_sentinel/scope_logger.h
  ../bpf/ms_common.h
  ../bpf/vmlinux.h
  /home/hjjiang/MicroSentinel/agent/src/perf_consumer.cpp
@@ -153,6 +155,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o
  ../agent/include/micro_sentinel/remote_dram_analyzer.h
  ../agent/include/micro_sentinel/runtime.h
  ../agent/include/micro_sentinel/sample.h
+ ../agent/include/micro_sentinel/scope_logger.h
  ../agent/include/micro_sentinel/skew_adjuster.h
  ../agent/include/micro_sentinel/symbolizer.h
  ../agent/include/micro_sentinel/tsc_calibrator.h

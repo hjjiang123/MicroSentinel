@@ -21,6 +21,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/bpf_orchestrator.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/mode_controller.h
+agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/include/micro_sentinel/scope_logger.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../bpf/ms_common.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/bpf_orchestrator.cpp.o: ../agent/src/bpf_orchestrator.cpp
@@ -104,6 +105,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/monitoring_targets.cpp.o: ../agent/src/mo
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/config.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/perf_consumer.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/sample.h
+agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/include/micro_sentinel/scope_logger.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../bpf/ms_common.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../bpf/vmlinux.h
 agent/CMakeFiles/ms_agent_core.dir/src/perf_consumer.cpp.o: ../agent/src/perf_consumer.cpp
@@ -152,6 +154,7 @@ agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sen
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/remote_dram_analyzer.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/runtime.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/sample.h
+agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/scope_logger.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/skew_adjuster.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/symbolizer.h
 agent/CMakeFiles/ms_agent_core.dir/src/runtime.cpp.o: ../agent/include/micro_sentinel/tsc_calibrator.h
