@@ -77,7 +77,6 @@ def _log_progress(artifact_dir: Path, message: str) -> None:
         # Best-effort only: don't break experiments if logging fails.
         pass
 
-
 def _split_cmd(cmd):
     if isinstance(cmd, (list, tuple)):
         return list(cmd)
