@@ -119,7 +119,12 @@ async def main():
     summary["operations"] = total_ops
     summary["duration_s"] = args.duration
     if args.metrics_file:
-        Path(args.metrics_file).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        # Ensure parent directory exists and expand user (~) before writing.
+        metrics_path = Path(args.metrics_file).expanduser()
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        if not metrics_path.exists():
+            metrics_path.touch()
+        metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     else:
         print(json.dumps(summary, indent=2))
     if args.annotations_file and annotation_buffers is not None:
@@ -128,8 +133,11 @@ async def main():
             for idx, buf in enumerate(annotation_buffers)
             if buf
         ]
-        Path(args.annotations_file).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
+        annotations_path = Path(args.annotations_file).expanduser()
+        annotations_path.parent.mkdir(parents=True, exist_ok=True)
+        if not annotations_path.exists():
+            annotations_path.touch()
+        annotations_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 if __name__ == "__main__":
     asyncio.run(main())
