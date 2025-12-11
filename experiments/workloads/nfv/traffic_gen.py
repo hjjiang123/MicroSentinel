@@ -83,6 +83,10 @@ async def main():
     summary = await traffic_loop(args, truth)
     truth.dump()
     if args.metrics_file:
+        metrics_path = Path(args.metrics_file).expanduser()
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        if not metrics_path.exists():
+            metrics_path.touch()
         Path(args.metrics_file).write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 

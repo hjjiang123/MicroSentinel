@@ -1,6 +1,6 @@
 workload: nfv_service_chain
 chain:
-  host: "211.0.0.101"
+  host: "211.65.193.185"
   stages:
     - name: "firewall"
       binary: "python3 experiments/workloads/nfv/firewall.py"
@@ -33,9 +33,9 @@ traffic_generator:
   tenants: ["tenant-a", "tenant-b", "tenant-c"]
   truth_log: "truth/traffic_emit.json"
   truth_limit: 8192
-  target_host: "211.0.0.101"
+  target_host: "211.65.193.185"
   remote:
-    host: "211.0.0.102"
+    host: "211.65.193.243"
     workdir: "~/MicroSentinel"
     metrics_dir: "~/MicroSentinel/artifacts/remote"
 topology:

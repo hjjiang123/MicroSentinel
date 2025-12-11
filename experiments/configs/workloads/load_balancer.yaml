@@ -1,7 +1,7 @@
 workload: load_balancer
 lb_node:
   binary: "python3 experiments/workloads/lb/l4_lb.py"
-  bind_address: "211.0.0.101"
+  bind_address: "211.65.193.185"
   port: 7100
   workers: 8
   rss_queues: 8
@@ -19,7 +19,7 @@ clients:
   generator: "python3 experiments/workloads/lb/lb_client.py"
   flows: 512
   remote:
-    host: "211.0.0.102"
+    host: "211.65.193.243"
     workdir: "~/MicroSentinel"
     metrics_dir: "~/MicroSentinel/artifacts/remote"
   protocol: "tcp"

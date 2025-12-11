@@ -156,7 +156,11 @@ async def main() -> None:
 
     output = json.dumps(summary, indent=2)
     if args.metrics_file:
-        Path(args.metrics_file).write_text(output, encoding="utf-8")
+        metrics_path = Path(args.metrics_file).expanduser()
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        if not metrics_path.exists():
+            metrics_path.touch()
+        metrics_path.write_text(output, encoding="utf-8")
     else:
         print(output)
     if args.ground_truth_log:
