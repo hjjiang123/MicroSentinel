@@ -2,3 +2,5 @@
 .vscode/
 temp/*
 temp2/*
+.copilot/*
+docs/*
