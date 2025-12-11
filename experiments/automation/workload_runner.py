@@ -66,6 +66,18 @@ CONFIG_ROOT = Path("experiments/configs/workloads")
 ARTIFACT_ROOT = Path("artifacts/experiments")
 
 
+def _log_progress(artifact_dir: Path, message: str) -> None:
+    """Append a progress line to a per-run log so users can follow execution."""
+    try:
+        log_path = artifact_dir / "progress.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(message + "\n")
+    except Exception:
+        # Best-effort only: don't break experiments if logging fails.
+        pass
+
+
 def _split_cmd(cmd):
     if isinstance(cmd, (list, tuple)):
         return list(cmd)
@@ -681,6 +693,8 @@ def execute_workload(
     overrides = overrides or {}
     cfg = load_config(workload, config_override)
     artifact_dir = ensure_artifact_dir(cfg["workload"])
+    _log_progress(artifact_dir, f"[runner] starting workload={cfg['workload']} mode={mode} duration={duration}s")
+    _log_progress(artifact_dir, "[runner] building command plan")
     commands = build_commands(cfg, duration, artifact_dir, overrides.get("workload"))
     plan = {
         "workload": cfg["workload"],
@@ -691,8 +705,10 @@ def execute_workload(
         "overrides": overrides,
     }
     (artifact_dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    _log_progress(artifact_dir, "[runner] wrote plan.json")
 
     if dry_run:
+        _log_progress(artifact_dir, "[runner] dry-run mode; no processes launched")
         print(json.dumps(plan, indent=2))
         return str(artifact_dir)
 
@@ -720,6 +736,7 @@ def execute_workload(
     }
 
     with contextlib.ExitStack() as stack:
+        _log_progress(artifact_dir, f"[runner] starting instrumentation mode={mode}")
         stack.enter_context(start_instrumentation(mode, artifact_dir, context))
         running: List[Tuple[CommandSpec, object]] = []
         for spec in commands:
@@ -734,9 +751,12 @@ def execute_workload(
                 )
             )
             running.append((spec, proc))
+        _log_progress(artifact_dir, "[runner] all workload processes started")
         monitor_logs = _launch_monitors(duration, artifact_dir, stack, [proc.pid for _, proc in running])
+        _log_progress(artifact_dir, "[runner] host monitors started; entering steady-state run")
         time.sleep(duration)
 
+    _log_progress(artifact_dir, "[runner] main duration elapsed; collecting remote metrics")
     remote_log, remote_errors = _collect_remote_metrics(commands, artifact_dir)
     if remote_log:
         monitor_logs["remote_fetch"] = str(remote_log)
@@ -745,6 +765,7 @@ def execute_workload(
     recorder.record_monitors(monitor_logs)
     recorder.capture_command_metrics(running)
     recorder.finalize()
+    _log_progress(artifact_dir, "[runner] run_result.json written; run complete")
     return str(artifact_dir)
 
 

@@ -30,6 +30,10 @@ def managed_process(
     if log_path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stdout = open(log_path, "w", encoding="utf-8")
+        # Write a small header so users can see what was launched.
+        launch_line = f"[launcher] starting {name}: {' '.join(argv)}\n"
+        stdout.write(launch_line)
+        stdout.flush()
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=stdout, stderr=subprocess.STDOUT)
     try:
         time.sleep(ready_wait)
