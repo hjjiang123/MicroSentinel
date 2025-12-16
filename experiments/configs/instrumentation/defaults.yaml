@@ -1,0 +1,35 @@
+# Global instrumentation defaults used by the automation runner.
+# Suites can still override these values, but editing this file keeps
+# the canonical sampling knobs in one place.
+defaults:
+  token_rate: 2000          # samples/sec/core target for sentinel + diagnostic
+  delta_us: 10              # flow association window (microseconds)
+  filters: []
+
+# Optional per-workload overrides. Keys must match workload names in
+# experiments/configs/workloads/*.yaml.
+workload_defaults:
+  kv:
+    delta_us: 5
+  load_balancer:
+    delta_us: 12
+  nfv_service_chain:
+    delta_us: 15
+
+# Object map presets referenced by suites via `object_map_preset`.
+# These entries intentionally stick to symbolic ranges so they stay
+# independent of specific PID/address tuples; suites can augment them
+# with runtime metadata if needed.
+object_map_presets:
+  kv_hotset:
+    globals:
+      - symbol: A
+        size: 65536
+      - symbol: B
+        size: 65536
+      - symbol: hot_cache
+        size: 32768
+    heaps:
+      - tenant: tenant-a
+        label: obj_hot
+        bytes: 65536

@@ -7,10 +7,17 @@ import argparse
 import contextlib
 import json
 import math
+import os
+import resource
 import shlex
 import shutil
+import socket
 import subprocess
 import time
+import sys
+import urllib.error
+import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +26,8 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from experiments.automation.instrumentation import start_instrumentation
-from experiments.automation.process_utils import managed_process
+from experiments.automation.pmu_catalog import build_pmu_update
+from experiments.automation.process_utils import managed_process, ProcessLaunchError
 from experiments.automation.results import ResultRecorder
 
 
@@ -30,6 +38,7 @@ class RemoteSpec:
     metrics_dir: Optional[str] = None
     pull_metrics: bool = True
     ssh_options: List[str] = field(default_factory=lambda: ["-o", "BatchMode=yes"])
+    local_user: Optional[str] = None
 
     def metrics_target(self, filename: str) -> str:
         base = self.metrics_dir or self.workdir or "."
@@ -45,7 +54,10 @@ class RemoteSpec:
                 remote_cmd = f"cd {self.workdir} && {remote_cmd}"
             else:
                 remote_cmd = f"cd {shlex.quote(self.workdir)} && {remote_cmd}"
-        return ["ssh", *self.ssh_options, self.host, remote_cmd]
+        cmd = ["ssh", *self.ssh_options, self.host, remote_cmd]
+        if self.local_user and os.geteuid() == 0:
+            return ["sudo", "-u", self.local_user, *cmd]
+        return cmd
 
 
 @dataclass
@@ -64,6 +76,151 @@ class CommandSpec:
 
 CONFIG_ROOT = Path("experiments/configs/workloads")
 ARTIFACT_ROOT = Path("artifacts/experiments")
+INSTRUMENTATION_DEFAULTS_PATH = Path("experiments/configs/instrumentation/defaults.yaml")
+
+
+def _load_instrumentation_defaults():
+    if not INSTRUMENTATION_DEFAULTS_PATH.exists():
+        return {}, {}, {}
+    try:
+        raw = yaml.safe_load(INSTRUMENTATION_DEFAULTS_PATH.read_text(encoding="utf-8"))
+    except OSError:
+        return {}, {}, {}
+    if not isinstance(raw, dict):
+        return {}, {}, {}
+    defaults = raw.get("defaults") or {}
+    workload_defaults = raw.get("workload_defaults") or {}
+    object_maps = raw.get("object_map_presets") or {}
+    return defaults, workload_defaults, object_maps
+
+
+_GLOBAL_INSTRUMENTATION_DEFAULTS, _WORKLOAD_INSTRUMENTATION_DEFAULTS, _OBJECT_MAP_PRESETS = _load_instrumentation_defaults()
+
+
+def _coerce_int(value, fallback):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+DEFAULT_TOKEN_RATE = _coerce_int(_GLOBAL_INSTRUMENTATION_DEFAULTS.get("token_rate"), 2000)
+
+
+CLIENT_GRACE_S = 5
+
+
+CAP_SYS_ADMIN = 21
+CAP_BPF = 39
+
+
+def _cap_eff_mask() -> int:
+    try:
+        status = Path("/proc/self/status").read_text(encoding="utf-8", errors="ignore")
+        for line in status.splitlines():
+            if line.startswith("CapEff:"):
+                _, value = line.split(":", 1)
+                return int(value.strip(), 16)
+    except Exception:
+        pass
+    return 0
+
+
+def _has_cap(cap_num: int) -> bool:
+    mask = _cap_eff_mask()
+    return bool(mask & (1 << cap_num))
+
+
+def _read_sysctl_int(path: str) -> int:
+    try:
+        return int(Path(path).read_text(encoding="utf-8").strip())
+    except Exception:
+        return -1
+
+
+def _format_memlock_bytes(value: int) -> str:
+    if value < 0:
+        return "unknown"
+    if value == resource.RLIM_INFINITY:
+        return "unlimited"
+    # render as KiB for familiarity with `ulimit -l`
+    return f"{value // 1024} KiB"
+
+
+def _microsentinel_precheck(skip: bool = False) -> None:
+    if skip:
+        return
+
+    issues: List[str] = []
+
+    unpriv_bpf = _read_sysctl_int("/proc/sys/kernel/unprivileged_bpf_disabled")
+    if os.geteuid() != 0 and unpriv_bpf == 1:
+        issues.append("kernel.unprivileged_bpf_disabled=1 and runner is not root")
+
+    # Most environments require CAP_SYS_ADMIN (older kernels) or CAP_BPF (newer kernels).
+    if os.geteuid() != 0 and not (_has_cap(CAP_SYS_ADMIN) or _has_cap(CAP_BPF)):
+        issues.append("missing CAP_SYS_ADMIN/CAP_BPF for loading eBPF programs")
+
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    except Exception:
+        soft, hard = -1, -1
+
+    # Try to raise memlock if possible (applies to child processes too).
+    try:
+        if hard not in (-1, resource.RLIM_INFINITY) and soft < hard:
+            resource.setrlimit(resource.RLIMIT_MEMLOCK, (hard, hard))
+            soft = hard
+        elif hard == resource.RLIM_INFINITY and soft != resource.RLIM_INFINITY:
+            resource.setrlimit(resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+            soft = hard = resource.RLIM_INFINITY
+    except Exception:
+        pass
+
+    # libbpf commonly fails with small memlock limits.
+    if soft not in (-1, resource.RLIM_INFINITY) and soft < (64 * 1024 * 1024):
+        issues.append(f"RLIMIT_MEMLOCK too low ({_format_memlock_bytes(soft)}; recommend unlimited)")
+
+    if issues:
+        msg = (
+            "microsentinel mode needs eBPF program loading, but the environment is not ready:\n"
+            + "\n".join(f"- {item}" for item in issues)
+            + "\n\nFix options (pick one):\n"
+            + "1) Run the suite/workload as root (recommended for experiments):\n"
+            + "   sudo -E python3 -m experiments.automation.run_suite ...\n"
+            + "2) Grant capabilities to the agent binary (advanced; may vary by kernel):\n"
+            + "   sudo setcap cap_sys_admin,cap_bpf+ep build/agent/micro_sentinel_agent\n"
+            + "3) Raise memlock (required on many systems):\n"
+            + "   ulimit -l unlimited\n"
+            + "\nIf you intentionally want to continue (agent may fall back to mock mode), set:\n"
+            + "  overrides.instrumentation.bpf_skip_precheck=true\n"
+        )
+        raise ProcessLaunchError(msg)
+
+
+def _build_instrumentation_overrides(workload_name: str, user_overrides: Optional[Dict[str, object]]):
+    merged: Dict[str, object] = {}
+    sources: Dict[str, str] = {}
+
+    def _ingest(source: Optional[Dict[str, object]], label: str) -> None:
+        if not isinstance(source, dict):
+            return
+        for key, value in source.items():
+            merged[key] = deepcopy(value)
+            sources[key] = label
+
+    _ingest(_GLOBAL_INSTRUMENTATION_DEFAULTS, "global")
+    _ingest(_WORKLOAD_INSTRUMENTATION_DEFAULTS.get(workload_name), "workload")
+    _ingest(user_overrides, "user")
+
+    preset_name = merged.pop("object_map_preset", None)
+    if preset_name and not merged.get("object_map"):
+        preset = _OBJECT_MAP_PRESETS.get(preset_name)
+        if isinstance(preset, dict):
+            merged["object_map"] = deepcopy(preset)
+            sources["object_map"] = "preset"
+
+    return merged, sources
 
 
 def _log_progress(artifact_dir: Path, message: str) -> None:
@@ -76,6 +233,258 @@ def _log_progress(artifact_dir: Path, message: str) -> None:
     except Exception:
         # Best-effort only: don't break experiments if logging fails.
         pass
+
+
+def _parse_agent_config(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return values
+
+
+def _resolve_control_endpoint(config_path: str, overrides: Dict[str, object]) -> Tuple[str, int]:
+    cfg_path = Path(config_path)
+    conf_values = _parse_agent_config(cfg_path) if config_path else {}
+    addr = overrides.get("control_address") or conf_values.get("control_address") or "127.0.0.1"
+    port_value = overrides.get("control_port") or conf_values.get("control_port") or "9200"
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        port = 9200
+    return addr, port
+
+
+def _wait_for_control_plane(address: str, port: int, timeout_s: float = 10.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((address, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.25)
+    return False
+
+
+def _post_control_request(base_url: str, path: str, payload: Dict[str, object]) -> Tuple[bool, Optional[str]]:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5.0):
+            return True, None
+    except urllib.error.URLError as exc:
+        return False, str(exc)
+
+
+def _fetch_prometheus_metrics(artifact_dir: Path, address: str, port: int) -> Optional[Path]:
+    url = f"http://{address}:{port}/metrics"
+    try:
+        with urllib.request.urlopen(url, timeout=3.0) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    out = artifact_dir / "agent_metrics.prom"
+    try:
+        out.write_text(body, encoding="utf-8")
+        return out
+    except Exception:
+        return None
+
+
+def _normalize_filter_specs(raw_filters) -> List[Dict[str, str]]:
+    if not raw_filters:
+        return []
+    if isinstance(raw_filters, (str, dict)):
+        candidates = [raw_filters]
+    elif isinstance(raw_filters, list):
+        candidates = raw_filters
+    else:
+        return []
+    normalized: List[Dict[str, str]] = []
+    for entry in candidates:
+        if isinstance(entry, dict):
+            spec = {"type": entry.get("type"), "value": entry.get("value")}
+            if spec["type"] and spec["value"]:
+                normalized.append(spec)
+            continue
+        if isinstance(entry, str):
+            try:
+                parsed = json.loads(entry)
+            except json.JSONDecodeError:
+                parsed = {"type": "flow", "value": entry}
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict) and item.get("type") and item.get("value"):
+                        normalized.append({"type": item["type"], "value": item["value"]})
+                continue
+            if isinstance(parsed, dict):
+                if parsed.get("type") and parsed.get("value"):
+                    normalized.append({"type": parsed["type"], "value": parsed["value"]})
+                continue
+    return normalized
+
+
+def _parse_int_field(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            base = 16 if value.lower().startswith("0x") else 10
+            return int(value, base)
+        except ValueError:
+            return None
+    return None
+
+
+def _prepare_object_requests(spec: Dict[str, object]) -> Tuple[List[Dict[str, object]], List[str]]:
+    if not spec:
+        return [], []
+    warnings: List[str] = []
+    requests: List[Dict[str, object]] = []
+
+    def _ingest(entry: Dict[str, object], default_type: str) -> None:
+        if not isinstance(entry, dict):
+            warnings.append("object_map entry is not a dictionary; skipping")
+            return
+        name = entry.get("name") or entry.get("label") or entry.get("symbol")
+        pid = _parse_int_field(entry.get("pid"))
+        address = _parse_int_field(entry.get("address"))
+        size = _parse_int_field(entry.get("size")) or _parse_int_field(entry.get("bytes"))
+        obj_type = entry.get("type") or default_type
+        if not name:
+            warnings.append("object_map entry missing name/symbol label; skipping")
+            return
+        if not pid:
+            warnings.append(f"object_map entry '{name}' missing pid; cannot register")
+            return
+        if not address:
+            warnings.append(f"object_map entry '{name}' missing address; cannot register")
+            return
+        request = {
+            "pid": pid,
+            "address": address,
+            "name": name,
+            "type": obj_type,
+        }
+        if size:
+            request["size"] = size
+        requests.append(request)
+
+    for entry in spec.get("globals", []):
+        _ingest(entry, "global")
+    for entry in spec.get("heaps", []):
+        _ingest(entry, "heap")
+    return requests, warnings
+
+
+def _configure_microsentinel_agent(
+    agent_config_path: str,
+    overrides: Dict[str, object],
+    artifact_dir: Path,
+):
+    if not overrides:
+        return
+    relevant = False
+    for key in ("token_rate", "delta_us", "filters", "pmu_events", "object_map"):
+        value = overrides.get(key)
+        if value:
+            relevant = True
+            break
+    if not relevant:
+        return
+    control_addr, control_port = _resolve_control_endpoint(agent_config_path, overrides)
+    if not _wait_for_control_plane(control_addr, control_port):
+        _log_progress(
+            artifact_dir,
+            f"[runner] control plane {control_addr}:{control_port} unreachable; skipped instrumentation overrides",
+        )
+        return
+    base_url = f"http://{control_addr}:{control_port}"
+    bucket_payload: Dict[str, object] = {}
+    token_rate = overrides.get("token_rate")
+    try:
+        token_rate_int = int(token_rate) if token_rate is not None else None
+    except (TypeError, ValueError):
+        token_rate_int = None
+    if token_rate_int and token_rate_int > 0:
+        bucket_payload["sentinel_samples_per_sec"] = token_rate_int
+        bucket_payload["diagnostic_samples_per_sec"] = token_rate_int
+    delta_value = overrides.get("delta_us")
+    try:
+        delta_int = int(delta_value) if delta_value is not None else None
+    except (TypeError, ValueError):
+        delta_int = None
+    if delta_int and delta_int > 0:
+        bucket_payload["hard_drop_ns"] = delta_int * 1000
+    if bucket_payload:
+        ok, err = _post_control_request(base_url, "/api/v1/token-bucket", bucket_payload)
+        if ok:
+            _log_progress(artifact_dir, f"[runner] applied token bucket override {bucket_payload}")
+        else:
+            _log_progress(
+                artifact_dir,
+                f"[runner] failed to apply token bucket override {bucket_payload}: {err}",
+            )
+    filter_specs = _normalize_filter_specs(overrides.get("filters"))
+    if filter_specs:
+        payload = {"targets": filter_specs}
+        ok, err = _post_control_request(base_url, "/api/v1/targets", payload)
+        if ok:
+            _log_progress(artifact_dir, f"[runner] applied filter override {payload}")
+        else:
+            _log_progress(artifact_dir, f"[runner] failed to apply filter override {payload}: {err}")
+    pmu_events = overrides.get("pmu_events") or []
+    if pmu_events:
+        pmu_payload, warnings = build_pmu_update(pmu_events)
+        for warn in warnings:
+            _log_progress(artifact_dir, f"[runner] {warn}")
+        if pmu_payload:
+            ok, err = _post_control_request(base_url, "/api/v1/pmu-config", pmu_payload)
+            if ok:
+                _log_progress(artifact_dir, f"[runner] applied PMU override {pmu_payload}")
+            else:
+                _log_progress(
+                    artifact_dir,
+                    f"[runner] failed to apply PMU override {pmu_payload}: {err}",
+                )
+        object_map = overrides.get("object_map")
+        if object_map:
+            map_path = artifact_dir / "object_map_config.json"
+            try:
+                map_path.write_text(json.dumps(object_map, indent=2), encoding="utf-8")
+            except OSError as exc:
+                _log_progress(artifact_dir, f"[runner] failed to write object_map_config.json: {exc}")
+            requests, warnings = _prepare_object_requests(object_map)
+            for warn in warnings:
+                _log_progress(artifact_dir, f"[runner] {warn}")
+            if not requests:
+                _log_progress(artifact_dir, "[runner] object_map override captured; no entries posted")
+            for req in requests:
+                ok, err = _post_control_request(base_url, "/api/v1/symbols/data", req)
+                if ok:
+                    _log_progress(artifact_dir, f"[runner] registered data object {req['name']}@0x{req['address']:x}")
+                else:
+                    _log_progress(
+                        artifact_dir,
+                        f"[runner] failed to register data object {req['name']}@0x{req['address']:x}: {err}",
+                    )
 
 def _split_cmd(cmd):
     if isinstance(cmd, (list, tuple)):
@@ -138,17 +547,33 @@ def _build_remote_spec(cfg: Optional[Dict]) -> Optional[RemoteSpec]:
         return None
     if "host" not in cfg:
         raise ValueError("remote config requires 'host'")
+    host = str(cfg["host"])
+    user = cfg.get("user")
+    if user and "@" not in host:
+        host = f"{user}@{host}"
+    # If the runner is invoked via sudo, avoid trying to SSH as root unless
+    # the config explicitly requests it.
+    sudo_user = None
+    if os.geteuid() == 0:
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user == "root":
+            sudo_user = None
+
+    if os.geteuid() == 0 and "@" not in host and not user:
+        if sudo_user and sudo_user != "root":
+            host = f"{sudo_user}@{host}"
     ssh_options = cfg.get("ssh_options")
     if ssh_options is not None:
         options = list(ssh_options)
     else:
         options = ["-o", "BatchMode=yes"]
     return RemoteSpec(
-        host=cfg["host"],
+        host=host,
         workdir=cfg.get("workdir", ""),
         metrics_dir=cfg.get("metrics_dir"),
         pull_metrics=cfg.get("pull_metrics", True),
         ssh_options=options,
+        local_user=str(cfg.get("local_user") or sudo_user) if (cfg.get("local_user") or sudo_user) else None,
     )
 
 
@@ -203,6 +628,8 @@ def _collect_remote_metrics(commands: List[CommandSpec], artifact_dir: Path) -> 
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 remote_src = f"{spec.remote.host}:{remote_path}"
                 scp_cmd = ["scp", *spec.remote.ssh_options, remote_src, str(local_path)]
+                if spec.remote.local_user and os.geteuid() == 0:
+                    scp_cmd = ["sudo", "-u", spec.remote.local_user, *scp_cmd]
                 log.write(f"COPY {spec.name} {remote_src} -> {local_path}\n")
                 try:
                     subprocess.run(scp_cmd, check=True, capture_output=True)
@@ -265,12 +692,17 @@ def build_kv_commands(
         ]
     server_extra: List[Tuple[Path, Optional[str]]] = []
     truth_file = server.get("truth_file")
-    if truth_file:
+    if truth_file and impl != "memcached":
         truth_path = _resolve_output_path(artifact_dir, truth_file)
         cmd += ["--truth-file", str(truth_path)]
         if server.get("truth_limit"):
             cmd += ["--truth-limit", str(server["truth_limit"])]
         server_extra.append((truth_path, None))
+    elif truth_file and impl == "memcached":
+        _log_progress(
+            artifact_dir,
+            "[runner] kv-server implementation=memcached does not support --truth-file/--truth-limit; ignoring truth_file",
+        )
     cmd = _apply_prefix(cmd, server.get("numa_policy"))
     specs.append(
         CommandSpec(
@@ -297,6 +729,10 @@ def build_kv_commands(
             formatted = _format_artifact_name(annotations_template, idx=idx)
             annotation_path = _resolve_output_path(artifact_dir, formatted)
             annotations_arg, annotation_remote = _resolve_metrics_destination(annotation_path, remote)
+            if remote and annotation_remote == remote_metrics:
+                # Avoid clobbering the main metrics file on the remote host.
+                annotation_remote = remote.metrics_target(f"kv_client_{idx}_annotations.json")
+                annotations_arg = annotation_remote
             extra_artifacts.append((annotation_path, annotation_remote))
         if impl == "memtier":
             cmd = _split_cmd(client_cfg.get("binary", "memtier_benchmark")) + [
@@ -676,6 +1112,33 @@ def _launch_monitors(
     return monitor_logs
 
 
+def _capture_host_facts(artifact_dir: Path) -> None:
+    def _run(argv: List[str]) -> Optional[str]:
+        try:
+            cp = subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            return cp.stdout.strip()
+        except Exception:
+            return None
+
+    facts: Dict[str, object] = {
+        "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+        "uname": _run(["uname", "-a"]),
+        "kernel_release": _run(["uname", "-r"]),
+        "cmdline": (Path("/proc/cmdline").read_text(encoding="utf-8").strip() if Path("/proc/cmdline").exists() else None),
+        "lscpu": _run(["lscpu"]),
+        "numactl_hardware": _run(["numactl", "--hardware"]) if shutil.which("numactl") else None,
+        "perf_event_paranoid": (Path("/proc/sys/kernel/perf_event_paranoid").read_text(encoding="utf-8").strip()
+                                 if Path("/proc/sys/kernel/perf_event_paranoid").exists() else None),
+        "numa_balancing": (Path("/proc/sys/kernel/numa_balancing").read_text(encoding="utf-8").strip()
+                           if Path("/proc/sys/kernel/numa_balancing").exists() else None),
+    }
+
+    try:
+        (artifact_dir / "host_facts.json").write_text(json.dumps(facts, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def execute_workload(
     workload: str,
     mode: str,
@@ -693,6 +1156,7 @@ def execute_workload(
     cfg = load_config(workload, config_override)
     artifact_dir = ensure_artifact_dir(cfg["workload"])
     _log_progress(artifact_dir, f"[runner] starting workload={cfg['workload']} mode={mode} duration={duration}s")
+    _capture_host_facts(artifact_dir)
     _log_progress(artifact_dir, "[runner] building command plan")
     commands = build_commands(cfg, duration, artifact_dir, overrides.get("workload"))
     plan = {
@@ -708,17 +1172,42 @@ def execute_workload(
 
     if dry_run:
         _log_progress(artifact_dir, "[runner] dry-run mode; no processes launched")
-        print(json.dumps(plan, indent=2))
+        try:
+            print(json.dumps(plan, indent=2))
+        except BrokenPipeError:
+            # Common when piping to `head`; exit cleanly.
+            pass
         return str(artifact_dir)
 
-    instr_overrides = overrides.get("instrumentation", {})
+    user_instr_overrides = overrides.get("instrumentation") or {}
+    instr_overrides, instr_sources = _build_instrumentation_overrides(cfg["workload"], user_instr_overrides)
     perf_freq_value = instr_overrides.get("perf_freq", perf_freq)
-    token_rate_value = instr_overrides.get("token_rate", token_rate)
+    token_rate_source = instr_sources.get("token_rate")
+    if token_rate is not None:
+        token_rate_value = token_rate
+        token_rate_requested = True
+    elif "token_rate" in instr_overrides:
+        token_rate_value = _coerce_int(instr_overrides["token_rate"], DEFAULT_TOKEN_RATE)
+        token_rate_requested = token_rate_source in {"user", "workload"}
+    else:
+        token_rate_value = DEFAULT_TOKEN_RATE
+        token_rate_requested = False
     metrics_port_value = instr_overrides.get("metrics_port", metrics_port)
-    pmu_events = instr_overrides.get("pmu_events", "")
-    if isinstance(pmu_events, list):
-        pmu_events = ",".join(pmu_events)
+    pmu_events_override = instr_overrides.get("pmu_events")
+    pmu_event_list: List[str] = []
+    pmu_events = ""
+    if isinstance(pmu_events_override, str):
+        pmu_events = pmu_events_override
+        pmu_event_list = [part.strip() for part in pmu_events_override.split(",") if part.strip()]
+    elif isinstance(pmu_events_override, (list, tuple)):
+        pmu_event_list = [str(part).strip() for part in pmu_events_override if str(part).strip()]
+        pmu_events = ",".join(pmu_event_list)
+    elif pmu_events_override:
+        pmu_events = str(pmu_events_override)
+    delta_value = instr_overrides.get("delta_us")
+    filters_value = instr_overrides.get("filters", [])
     recorder = ResultRecorder(artifact_dir, plan)
+    perf_output_path = str((artifact_dir / "perf.data").resolve())
     context = {
         "freq": str(perf_freq_value),
         "duration": str(duration),
@@ -728,15 +1217,52 @@ def execute_workload(
         "token_rate": str(token_rate_value),
         "metrics_port": str(metrics_port_value),
         "pmu_events": pmu_events,
-        "delta_us": str(instr_overrides.get("delta_us", "")),
-        "filters": json.dumps(instr_overrides.get("filters", [])),
+        "delta_us": str(delta_value or ""),
+        "filters": json.dumps(filters_value),
         "perf_mode": instr_overrides.get("perf_mode", "record"),
         "perf_interval_ms": str(instr_overrides.get("perf_interval_ms", 1000)),
+        "perf_output": perf_output_path,
+    }
+    filters_runtime = filters_value if instr_sources.get("filters") in {"user", "workload"} else None
+    ms_runtime_overrides = {
+        "token_rate": token_rate_value if token_rate_requested else None,
+        "delta_us": delta_value if delta_value is not None else None,
+        "filters": filters_runtime,
+        "pmu_events": pmu_event_list,
+        "object_map": instr_overrides.get("object_map"),
+        "control_address": instr_overrides.get("control_address"),
+        "control_port": instr_overrides.get("control_port"),
     }
 
     with contextlib.ExitStack() as stack:
         _log_progress(artifact_dir, f"[runner] starting instrumentation mode={mode}")
+
+        if mode == "microsentinel":
+            _microsentinel_precheck(skip=bool(instr_overrides.get("bpf_skip_precheck", False)))
+
+        perf_skip_precheck = bool(instr_overrides.get("perf_skip_precheck", False))
+        if mode == "perf" and not perf_skip_precheck:
+            paranoid_path = Path("/proc/sys/kernel/perf_event_paranoid")
+            if paranoid_path.exists() and os.geteuid() != 0:
+                try:
+                    paranoid = int(paranoid_path.read_text(encoding="utf-8").strip())
+                except Exception:
+                    paranoid = None
+                # perf -a CPU-wide sampling generally requires CAP_PERFMON or relaxed paranoid.
+                if paranoid is not None and paranoid >= 1:
+                    msg = (
+                        "perf mode requires system-wide perf_event access, but kernel.perf_event_paranoid is "
+                        f"{paranoid} and the runner is not root. "
+                        "Either run with sufficient capabilities (e.g. sudo / CAP_PERFMON), or relax sysctl, e.g.:\n"
+                        "  sudo sysctl -w kernel.perf_event_paranoid=0\n"
+                        "(use -1 if you need kernel profiling)."
+                    )
+                    _log_progress(artifact_dir, f"[runner] precheck failed: {msg}")
+                    raise ProcessLaunchError(msg)
+
         stack.enter_context(start_instrumentation(mode, artifact_dir, context))
+        if mode == "microsentinel":
+            _configure_microsentinel_agent(agent_config, ms_runtime_overrides, artifact_dir)
         running: List[Tuple[CommandSpec, object]] = []
         for spec in commands:
             log_path = artifact_dir / spec.log_suffix
@@ -755,6 +1281,16 @@ def execute_workload(
         _log_progress(artifact_dir, "[runner] host monitors started; entering steady-state run")
         time.sleep(duration)
 
+        # Allow client-side generators a brief grace period to flush metrics/truth
+        # before the ExitStack teardown terminates all managed processes.
+        for spec, proc in running:
+            if spec.role != "client":
+                continue
+            try:
+                proc.wait(timeout=CLIENT_GRACE_S)
+            except Exception:
+                pass
+
     _log_progress(artifact_dir, "[runner] main duration elapsed; collecting remote metrics")
     remote_log, remote_errors = _collect_remote_metrics(commands, artifact_dir)
     if remote_log:
@@ -763,24 +1299,41 @@ def execute_workload(
         plan.setdefault("remote_fetch_errors", remote_errors)
     recorder.record_monitors(monitor_logs)
     recorder.capture_command_metrics(running)
+
+    if mode == "microsentinel":
+        addr, port = _resolve_control_endpoint(agent_config, instr_overrides)
+        # metrics may be bound separately; default to 127.0.0.1 unless overridden.
+        metrics_addr = instr_overrides.get("metrics_address") or "127.0.0.1"
+        try:
+            metrics_port_int = int(metrics_port_value)
+        except Exception:
+            metrics_port_int = 9105
+        metrics_path = _fetch_prometheus_metrics(artifact_dir, str(metrics_addr), metrics_port_int)
+        if metrics_path:
+            monitor_logs["agent_metrics"] = str(metrics_path)
     recorder.finalize()
     _log_progress(artifact_dir, "[runner] run_result.json written; run complete")
     return str(artifact_dir)
 
 
 def run_workload(args):
-    execute_workload(
-        workload=args.workload,
-        mode=args.mode,
-        duration=args.duration,
-        config_override=args.config,
-        dry_run=args.dry_run,
-        perf_freq=args.perf_freq,
-        agent_bin=args.agent_bin,
-        agent_config=args.agent_config,
-        token_rate=args.token_rate,
-        metrics_port=args.metrics_port,
-    )
+    try:
+        execute_workload(
+            workload=args.workload,
+            mode=args.mode,
+            duration=args.duration,
+            config_override=args.config,
+            dry_run=args.dry_run,
+            perf_freq=args.perf_freq,
+            agent_bin=args.agent_bin,
+            agent_config=args.agent_config,
+            token_rate=args.token_rate,
+            metrics_port=args.metrics_port,
+        )
+    except ProcessLaunchError as exc:
+        print(f"[workload_runner] error: {exc}", file=sys.stderr)
+        print("[workload_runner] hint: check artifacts/experiments/<run>/instrumentation_*.log for details", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def parse_args():
@@ -792,8 +1345,8 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--perf-freq", type=int, default=2000)
     parser.add_argument("--agent-bin", default="build/agent/micro_sentinel_agent")
-    parser.add_argument("--agent-config", default="config/micro_sentinel.toml")
-    parser.add_argument("--token-rate", type=int, default=2000)
+    parser.add_argument("--agent-config", default="agent/agent.conf")
+    parser.add_argument("--token-rate", type=int, default=None)
     parser.add_argument("--metrics-port", type=int, default=9105)
     return parser.parse_args()
 

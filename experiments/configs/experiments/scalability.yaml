@@ -1,15 +1,20 @@
 suite: scalability
 workload: kv
 config: experiments/configs/workloads/kv.yaml
-rate_scan:
-  samples_per_core: [500, 1000, 2000, 5000, 10000]
-  event_sets:
-    - [LLC-load-misses]
-    - [LLC-load-misses,cycles]
-    - [LLC-load-misses,OFFCORE_RESPONSE.ALL_REQUESTS]
 run_s: 90
+warmup_s: 15
 modes:
   - microsentinel
-filters:
-  - mode: full
-  - mode: tenant-filtered
+overrides:
+  annotations:
+    suite: scalability
+parameters:
+  rate_scan:
+    samples_per_core: [500, 1000, 2000, 5000, 10000]
+    event_sets:
+      - [LLC-load-misses]
+      - [LLC-load-misses,cycles]
+      - [LLC-load-misses,OFFCORE_RESPONSE.ALL_REQUESTS]
+  filters:
+    - mode: full
+    - mode: tenant-filtered

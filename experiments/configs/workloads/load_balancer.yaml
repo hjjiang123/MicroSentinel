@@ -18,10 +18,11 @@ backend_stub:
 clients:
   generator: "python3 experiments/workloads/lb/lb_client.py"
   flows: 512
+  ground_truth_log: "truth/lb_ground_truth.json"
   remote:
     host: "211.65.193.243"
-    workdir: "~/MicroSentinel"
-    metrics_dir: "~/MicroSentinel/artifacts/remote"
+    workdir: "/home/hjjiang/MicroSentinel"
+    metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
   protocol: "tcp"
   mix:
     long_connections: 0.6

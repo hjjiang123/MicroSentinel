@@ -1,0 +1,27 @@
+suite: flow_accuracy_smoke_local
+run_s: 15
+warmup_s: 0
+repetitions: 1
+modes: [microsentinel]
+overrides:
+  annotations:
+    suite: flow_accuracy_smoke_local
+workloads:
+  - name: load_balancer
+    config: experiments/configs/workloads/load_balancer.yaml
+    annotations:
+      scenario: flow_ground_truth
+    parameters:
+      delta_values_us: [10]
+      client_variants:
+        - name: tenant-a
+          flows: 64
+    overrides:
+      lb_node:
+        bind_address: "127.0.0.1"
+      clients:
+        implementation: builtin
+        remote: null
+        generator: python3 experiments/workloads/lb/lb_client.py
+        flows: 64
+        ground_truth_log: truth/lb_ground_truth.json

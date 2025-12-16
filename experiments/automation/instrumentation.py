@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -17,16 +18,20 @@ def _baseline_cmd(_ctx: Dict[str, str]) -> Optional[str]:
 
 
 def _perf_cmd(ctx: Dict[str, str]) -> str:
+    perf_bin = shutil.which("perf_5.10") or shutil.which("perf") or "perf"
     events = ctx.get("pmu_events") or "cycles,LLC-load-misses,branches"
     freq = ctx.get("freq", "2000")
     duration = ctx.get("duration", "60")
     perf_mode = ctx.get("perf_mode", "record")
+    out_path = ctx.get("perf_output")
     if perf_mode == "stat":
         interval = ctx.get("perf_interval_ms", "1000")
+        out_arg = f"-o {shlex.quote(out_path)}" if out_path else ""
         return (
-            f"perf stat -x, -I {interval} -a -e {events} -- sleep {duration}"
+            f"{perf_bin} stat -x, -I {interval} -a -e {events} {out_arg} -- sleep {duration}"
         )
-    return f"perf record -F {freq} -a -e {events} -g -- sleep {duration}"
+    out_arg = f"-o {shlex.quote(out_path)}" if out_path else ""
+    return f"{perf_bin} record -F {freq} -a -e {events} -g {out_arg} -- sleep {duration}"
 
 
 def _microsentinel_cmd(ctx: Dict[str, str]) -> str:

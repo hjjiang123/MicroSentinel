@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import json
+import socket
+import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,34 @@ class FlowResult:
     ground_truth: Optional[List[Tuple[int, int]]] = None
 
 
+MS_FNV64_OFFSET = 1469598103934665603
+MS_FNV64_PRIME = 1099511628211
+
+
+def _fnv64_mix(h: int, data: int) -> int:
+    h ^= (data & 0xFFFFFFFFFFFFFFFF)
+    h = (h * MS_FNV64_PRIME) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def _ipv4_be32(addr: str) -> int:
+    return struct.unpack("!I", socket.inet_aton(addr))[0]
+
+
+def compute_ms_flow_id_v4(src_ip: str, dst_ip: str, src_port: int, dst_port: int, proto: int = 6, direction: int = 0) -> int:
+    """Match bpf/micro_sentinel_kern.bpf.c::hash_flow_tuple() for IPv4.
+
+    Note: kernel stores IPv4 addrs in network byte order (be32) without ntohl.
+    Ports are stored in host order (after bpf_ntohs).
+    """
+    h = MS_FNV64_OFFSET
+    h = _fnv64_mix(h, direction)
+    h = _fnv64_mix(h, proto)
+    h = _fnv64_mix(h, ((src_port & 0xFFFF) << 32) | (dst_port & 0xFFFF))
+    h = _fnv64_mix(h, ((_ipv4_be32(src_ip) & 0xFFFFFFFF) << 32) | (_ipv4_be32(dst_ip) & 0xFFFFFFFF))
+    return h if h != 0 else 1
+
+
 async def flow_task(
     host: str,
     port: int,
@@ -51,15 +81,37 @@ async def flow_task(
     try:
         reader, writer = await asyncio.open_connection(host, port)
     except Exception:
-        return FlowResult(0, [], 1)
+        return FlowResult(flow_id, 0, [], 1, truth_buffer)
+
+    sockname = writer.get_extra_info("sockname")
+    peername = writer.get_extra_info("peername")
+    # Best-effort: only compute when we have IPv4 tuples.
+    computed_flow_id = flow_id
+    tuple_info: Optional[Dict[str, object]] = None
+    try:
+        if isinstance(sockname, tuple) and isinstance(peername, tuple) and len(sockname) >= 2 and len(peername) >= 2:
+            src_ip, src_port = sockname[0], int(sockname[1])
+            dst_ip, dst_port = peername[0], int(peername[1])
+            if ":" not in src_ip and ":" not in dst_ip:
+                computed_flow_id = compute_ms_flow_id_v4(src_ip, dst_ip, src_port, dst_port, proto=6, direction=0)
+                tuple_info = {
+                    "src_ip": src_ip,
+                    "src_port": src_port,
+                    "dst_ip": dst_ip,
+                    "dst_port": dst_port,
+                    "proto": 6,
+                    "direction": 0,
+                }
+    except Exception:
+        pass
 
     try:
         while time.monotonic() < deadline:
-            start = time.perf_counter_ns()
+            start = time.monotonic_ns()
             writer.write(payload)
             await writer.drain()
             await reader.readexactly(len(payload))
-            end = time.perf_counter_ns()
+            end = time.monotonic_ns()
             latencies.append((end - start) / 1_000.0)
             operations += 1
             if truth_buffer is not None:
@@ -73,7 +125,10 @@ async def flow_task(
         except Exception:
             pass
 
-    return FlowResult(flow_id, operations, latencies, errors, truth_buffer)
+    result = FlowResult(computed_flow_id, operations, latencies, errors, truth_buffer)
+    # Attach tuple info out-of-band by stashing it on the instance (for JSON writer).
+    setattr(result, "tuple_info", tuple_info)
+    return result
 
 
 def aggregate(results: Iterable[FlowResult], duration: int) -> Dict[str, object]:
@@ -116,9 +171,11 @@ def _write_ground_truth(path: str, results: Iterable[FlowResult]) -> None:
     for res in results:
         if not res.ground_truth:
             continue
+        tuple_info = getattr(res, "tuple_info", None)
         events.append(
             {
                 "flow_id": res.flow_id,
+                "tuple": tuple_info,
                 "events": [
                     {"start_ns": start, "end_ns": end}
                     for start, end in res.ground_truth

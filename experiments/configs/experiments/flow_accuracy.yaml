@@ -8,7 +8,7 @@ overrides:
     suite: flow_accuracy
 workloads:
   - name: load_balancer
-    config: experiments/configs/workloads/lb.yaml
+    config: experiments/configs/workloads/load_balancer.yaml
     annotations:
       scenario: flow_ground_truth
     parameters:
@@ -28,8 +28,9 @@ workloads:
       clients:
         implementation: builtin
         remote:
-          host: control_user@client-host
-          workdir: ~/lb_accuracy
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
         flows: 128
         ground_truth_log: metrics/flow_truth.json
@@ -51,8 +52,9 @@ workloads:
       clients:
         implementation: builtin
         remote:
-          host: control_user@client-host
-          workdir: ~/kv_accuracy
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/kv/kv_client.py
         connections_per_instance: 32
         annotations_file: metrics/kv_truth.json

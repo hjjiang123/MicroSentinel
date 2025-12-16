@@ -39,7 +39,7 @@ async def send_loop(
         if op == "SET":
             cmd += f" {len(value_blob)}"
         cmd += "\n"
-        start = time.perf_counter_ns()
+        start = time.monotonic_ns()
         writer.write(cmd.encode())
         await writer.drain()
         if op == "SET":
@@ -49,7 +49,7 @@ async def send_loop(
             await reader.readline()
         else:
             await reader.readline()
-        end = time.perf_counter_ns()
+        end = time.monotonic_ns()
         latency_hist.append((end - start) / 1e3)
         op_counter.append(1)
         if annotations is not None:

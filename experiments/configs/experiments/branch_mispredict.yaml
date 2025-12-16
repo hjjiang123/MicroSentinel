@@ -1,14 +1,18 @@
 suite: branch_mispredict
 run_s: 150
+warmup_s: 20
 workload: load_balancer
-config: experiments/configs/workloads/lb.yaml
+config: experiments/configs/workloads/load_balancer.yaml
 modes:
   - microsentinel
-pmu_events:
-  - BR_MISP_RETIRED.ALL_BRANCHES
-  - BR_MISP_EXEC.ALL_BRANCHES
-clients:
-  - name: legacy
-    header_variant: legacy
-  - name: new_proto
-    header_variant: experimental
+overrides:
+  annotations:
+    suite: branch_mispredict
+parameters:
+  pmu_events:
+    - [BR_MISP_RETIRED.ALL_BRANCHES, BR_MISP_EXEC.ALL_BRANCHES]
+  client_variants:
+    - name: legacy
+      header_variant: legacy
+    - name: new_proto
+      header_variant: experimental

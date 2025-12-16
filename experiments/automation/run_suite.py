@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -17,6 +18,28 @@ from experiments.automation.workload_runner import execute_workload
 
 CONFIG_ROOT = Path("experiments/configs/experiments")
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ALLOWED_SUITE_KEYS = {
+    "suite",
+    "run_s",
+    "warmup_s",
+    "repetitions",
+    "workload",
+    "config",
+    "modes",
+    "overrides",
+    "workloads",
+    "parameters",
+    "notes",
+    "description",
+}
+
+def _warn_unknown_keys(label: str, mapping: Dict) -> None:
+    unknown = sorted(set(mapping.keys()) - ALLOWED_SUITE_KEYS)
+    if unknown:
+        print(
+            f"[run_suite] warning: unrecognized top-level keys {unknown} in {label}; they will be ignored",
+            file=sys.stderr,
+        )
 
 
 def load_suite(name: str, path_override: Optional[str] = None) -> dict:
@@ -44,8 +67,41 @@ def deep_merge(base: Dict, extra: Dict) -> Dict:
     return result
 
 
+def normalize_overrides(merged: Dict) -> Dict:
+    """Normalize run_suite overrides to the structure expected by execute_workload().
+
+    - Workload YAML overrides (e.g., server/clients/lb_node/traffic_generator/chain) must live under
+      overrides['workload'] because `execute_workload()` passes overrides.get('workload') into
+      `build_commands()`.
+    - Instrumentation, annotations, mutations remain top-level.
+    """
+
+    if not isinstance(merged, dict):
+        return {}
+
+    top_level: Dict = {}
+    workload: Dict = {}
+
+    # Preserve explicit nested workload overrides.
+    explicit_workload = merged.get("workload")
+    if isinstance(explicit_workload, dict):
+        workload = deep_merge(workload, explicit_workload)
+
+    for key, value in merged.items():
+        if key in {"instrumentation", "annotations", "mutations", "workload"}:
+            if key != "workload":
+                top_level[key] = value
+            continue
+        workload[key] = value
+
+    if workload:
+        top_level["workload"] = workload
+    return top_level
+
+
 def expand_parameter_variants(params: Dict) -> List[Dict]:
     axes: List[List[Dict]] = []
+    passthrough: Dict = {}
     if params.get("delta_values_us"):
         axes.append([
             {"instrumentation": {"delta_us": value}}
@@ -63,7 +119,7 @@ def expand_parameter_variants(params: Dict) -> List[Dict]:
         ])
     if params.get("numa_actions"):
         axes.append([
-            {"workload": {"server": {"numa_policy": action.get("server_cmd_prefix")}}, "annotations": {"numa_action": action.get("description", "")}}
+            {"server": {"numa_policy": action.get("server_cmd_prefix")}, "annotations": {"numa_action": action.get("description", "")}}
             for action in params["numa_actions"]
         ])
     if params.get("mutations"):
@@ -73,7 +129,7 @@ def expand_parameter_variants(params: Dict) -> List[Dict]:
         ])
     if params.get("client_variants"):
         axes.append([
-            {"workload": {"clients": variant}, "annotations": {"client_variant": variant.get("name", "variant")}}
+            {"clients": variant, "annotations": {"client_variant": variant.get("name", "variant")}}
             for variant in params["client_variants"]
         ])
     if params.get("rate_scan"):
@@ -90,10 +146,16 @@ def expand_parameter_variants(params: Dict) -> List[Dict]:
                     override["instrumentation"]["pmu_events"] = ",".join(event_set)
                 axis.append(override)
         axes.append(axis)
+    if params.get("object_map"):
+        passthrough = deep_merge(passthrough, {"instrumentation": {"object_map": params["object_map"]}})
     variants = [{}]
     for axis in axes:
         variants = [deep_merge(base, option) for base in variants for option in axis]
-    return variants or [{}]
+    if not variants:
+        variants = [{}]
+    if passthrough:
+        variants = [deep_merge(variant, passthrough) for variant in variants]
+    return variants
 
 
 def build_runs(suite: Dict, duration_override: Optional[int]) -> List[SuiteRun]:
@@ -117,6 +179,7 @@ def build_runs(suite: Dict, duration_override: Optional[int]) -> List[SuiteRun]:
         for variant in variants:
             overrides = deep_merge(base_overrides, workload_overrides)
             overrides = deep_merge(overrides, variant)
+            overrides = normalize_overrides(overrides)
             for mode in modes:
                 runs.append(
                     SuiteRun(
@@ -152,11 +215,29 @@ def apply_mutations(mutations: Optional[List[Dict]]):
 
 def run_suite(args):
     suite = load_suite(args.suite, args.config)
+    _warn_unknown_keys(suite.get("suite", args.suite), suite)
     artifacts: List[str] = []
     runs = build_runs(suite, args.duration)
+    warmup_s = int(suite.get("warmup_s") or 0)
     for suite_run in runs:
         for _ in range(suite_run.repetitions):
             overrides = deep_merge({}, suite_run.overrides)
+            if warmup_s > 0 and not args.dry_run:
+                warmup_overrides = deep_merge(overrides, {"annotations": {"phase": "warmup"}})
+                with apply_mutations(warmup_overrides.get("mutations")):
+                    execute_workload(
+                        workload=suite_run.workload,
+                        mode="baseline",
+                        duration=warmup_s,
+                        config_override=suite_run.config,
+                        dry_run=False,
+                        perf_freq=args.perf_freq,
+                        agent_bin=args.agent_bin,
+                        agent_config=args.agent_config,
+                        token_rate=args.token_rate,
+                        metrics_port=args.metrics_port,
+                        overrides=warmup_overrides,
+                    )
             with apply_mutations(overrides.get("mutations")):
                 artifact = execute_workload(
                     workload=suite_run.workload,
@@ -185,8 +266,8 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--perf-freq", type=int, default=2000)
     parser.add_argument("--agent-bin", default="build/agent/micro_sentinel_agent")
-    parser.add_argument("--agent-config", default="config/micro_sentinel.toml")
-    parser.add_argument("--token-rate", type=int, default=2000)
+    parser.add_argument("--agent-config", default="agent/agent.conf")
+    parser.add_argument("--token-rate", type=int, default=None)
     parser.add_argument("--metrics-port", type=int, default=9105)
     parser.add_argument("--summary", help="Write JSON summary to path")
     return parser.parse_args()

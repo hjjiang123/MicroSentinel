@@ -12,6 +12,7 @@ overrides:
 workloads:
   - name: kv
     config: experiments/configs/workloads/kv.yaml
+    repetitions: 3
     modes: [baseline, perf, microsentinel]
     parameters:
       delta_values_us: [5, 10, 20]
@@ -20,7 +21,6 @@ workloads:
         - ["MEM_LOAD_RETIRED.L3_MISS", "OFFCORE_RESPONSE.ALL_RFO"]
       rate_scan:
         samples_per_core: [500, 1000, 2000]
-      repetitions: 3
     overrides:
       server:
         implementation: memcached
@@ -29,15 +29,17 @@ workloads:
       clients:
         implementation: memtier
         remote:
-          host: control_user@client-host
-          workdir: ~/kv_load
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: memtier_benchmark
         connections_per_instance: 64
         options:
           ratio: "95:5"
           data_size: 256
   - name: load_balancer
-    config: experiments/configs/workloads/lb.yaml
+    config: experiments/configs/workloads/load_balancer.yaml
+    repetitions: 3
     modes: [baseline, perf, microsentinel]
     parameters:
       pmu_events:
@@ -56,12 +58,14 @@ workloads:
       clients:
         implementation: builtin
         remote:
-          host: control_user@client-host
-          workdir: ~/lb_load
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
         flows: 512
   - name: nfv_service_chain
-    config: experiments/configs/workloads/nfv.yaml
+    config: experiments/configs/workloads/nfv_service_chain.yaml
+    repetitions: 3
     modes: [baseline, perf, microsentinel]
     parameters:
       pmu_events:
@@ -73,8 +77,9 @@ workloads:
       traffic_generator:
         implementation: pktgen
         remote:
-          host: control_user@client-host
-          workdir: ~/pktgen_runs
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         binary: /opt/pktgen/run_pktgen.sh
         interface: ens6f0
         rate_pps: 2000000

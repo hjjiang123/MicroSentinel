@@ -1,13 +1,18 @@
 suite: numa_imbalance
 run_s: 600
+warmup_s: 60
 workload: kv
 config: experiments/configs/workloads/kv.yaml
 modes:
   - microsentinel
   - baseline
-numa_actions:
-  - description: pin tenant-a workers to node0 but allocate data on node1
-    server_cmd_prefix: "numactl --cpunodebind=0 --membind=1"
-metrics:
-  - tenant_remote_ratio
-  - tenant_latency_p99
+parameters:
+  numa_actions:
+    - description: pin tenant-a workers to node0 but allocate data on node1
+      server_cmd_prefix: "numactl --cpunodebind=0 --membind=1"
+overrides:
+  annotations:
+    suite: numa_imbalance
+    metrics:
+      - tenant_remote_ratio
+      - tenant_latency_p99

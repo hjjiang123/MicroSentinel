@@ -19,8 +19,8 @@ clients:
   connections_per_instance: 128
   remote:
     host: "211.65.193.243"
-    workdir: "~/MicroSentinel"
-    metrics_dir: "~/MicroSentinel/artifacts/remote"
+    workdir: "/home/hjjiang/MicroSentinel"
+    metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
   request_mix:
     get_ratio: 0.95
     set_ratio: 0.05
