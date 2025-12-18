@@ -34,6 +34,15 @@ class TruthFlow:
 
 
 def _load_json(path: Path):
+    # Guard: flow truth logs can become huge if something goes wrong (e.g.,
+    # very long runs with per-request logging). Avoid hanging analysis/plotting.
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    max_bytes = int(64 * 1024 * 1024)  # 64 MiB default safety cap
+    if size and size > max_bytes:
+        raise RuntimeError(f"truth file too large ({size} bytes > {max_bytes}); refusing to load: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
 

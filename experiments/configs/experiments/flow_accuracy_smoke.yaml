@@ -18,8 +18,7 @@ workloads:
           flows: 64
     overrides:
       lb_node:
-        implementation: haproxy
-        binary: haproxy
+        # Use the default Python load balancer to avoid haproxy dependency.
       clients:
         implementation: builtin
         remote:

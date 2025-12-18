@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -17,9 +18,55 @@ def _baseline_cmd(_ctx: Dict[str, str]) -> Optional[str]:
     return None
 
 
+def _perf_events_precheck(perf_bin: str, events: str) -> Optional[str]:
+    """Return an error string if perf rejects the event spec, else None.
+
+    We only treat *syntax/unsupported* as a signal to fall back. Permission
+    errors should surface as-is since falling back won't help.
+    """
+    try:
+        proc = subprocess.run(
+            [perf_bin, "stat", "-a", "-e", events, "--", "sleep", "0.1"],
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        return f"precheck_failed: {type(exc).__name__}: {exc}"
+
+    if proc.returncode == 0:
+        return None
+
+    stderr = (proc.stderr or "").strip()
+    lower = stderr.lower()
+    if any(
+        token in lower
+        for token in (
+            "event syntax error",
+            "unknown tracepoint",
+            "not supported",
+            "no such file or directory",  # event name not present
+            "parser error",
+        )
+    ):
+        return stderr or f"perf stat returned {proc.returncode}"
+
+    # Probably permissions (perf_event_paranoid/capabilities) or other runtime error.
+    return None
+
+
 def _perf_cmd(ctx: Dict[str, str]) -> str:
     perf_bin = shutil.which("perf_5.10") or shutil.which("perf") or "perf"
-    events = ctx.get("pmu_events") or "cycles,LLC-load-misses,branches"
+    default_events = "cycles,LLC-load-misses,branches"
+    events = ctx.get("pmu_events") or default_events
+
+    # Some suites request micro-arch specific events. On machines where those
+    # events are unavailable, perf exits immediately. Preflight and fall back.
+    err = _perf_events_precheck(perf_bin, events)
+    if err and events != default_events:
+        events = default_events
+        err = _perf_events_precheck(perf_bin, events)
+    if err:
+        events = "cycles"
     freq = ctx.get("freq", "2000")
     duration = ctx.get("duration", "60")
     perf_mode = ctx.get("perf_mode", "record")

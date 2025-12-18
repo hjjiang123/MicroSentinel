@@ -9,12 +9,16 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
 
 from experiments.automation.workload_runner import execute_workload
+
+
+ARTIFACT_ROOT = Path("artifacts/experiments")
 
 CONFIG_ROOT = Path("experiments/configs/experiments")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -158,7 +162,11 @@ def expand_parameter_variants(params: Dict) -> List[Dict]:
     return variants
 
 
-def build_runs(suite: Dict, duration_override: Optional[int]) -> List[SuiteRun]:
+def build_runs(
+    suite: Dict,
+    duration_override: Optional[int],
+    mode_override: Optional[List[str]] = None,
+) -> List[SuiteRun]:
     runs: List[SuiteRun] = []
     workloads = suite.get("workloads") or [
         {
@@ -175,7 +183,7 @@ def build_runs(suite: Dict, duration_override: Optional[int]) -> List[SuiteRun]:
         params = workload.get("parameters", {})
         variants = expand_parameter_variants(params)
         workload_overrides = workload.get("overrides", {})
-        modes = workload.get("modes", suite.get("modes", ["microsentinel"]))
+        modes = mode_override or workload.get("modes", suite.get("modes", ["microsentinel"]))
         for variant in variants:
             overrides = deep_merge(base_overrides, workload_overrides)
             overrides = deep_merge(overrides, variant)
@@ -216,8 +224,18 @@ def apply_mutations(mutations: Optional[List[Dict]]):
 def run_suite(args):
     suite = load_suite(args.suite, args.config)
     _warn_unknown_keys(suite.get("suite", args.suite), suite)
+
+    # Each invocation of run_suite gets its own top-level directory so artifacts
+    # from multiple runs don't interleave.
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suite_run_dir = ARTIFACT_ROOT / f"{args.suite}_{ts}"
+    suite_run_dir.mkdir(parents=True, exist_ok=True)
+
     artifacts: List[str] = []
-    runs = build_runs(suite, args.duration)
+    mode_override: Optional[List[str]] = None
+    if args.override_modes:
+        mode_override = [m.strip() for m in args.override_modes.split(",") if m.strip()]
+    runs = build_runs(suite, args.duration, mode_override=mode_override)
     warmup_s = int(suite.get("warmup_s") or 0)
     for suite_run in runs:
         for _ in range(suite_run.repetitions):
@@ -237,6 +255,7 @@ def run_suite(args):
                         token_rate=args.token_rate,
                         metrics_port=args.metrics_port,
                         overrides=warmup_overrides,
+                        artifact_root=str(suite_run_dir),
                     )
             with apply_mutations(overrides.get("mutations")):
                 artifact = execute_workload(
@@ -251,11 +270,22 @@ def run_suite(args):
                     token_rate=args.token_rate,
                     metrics_port=args.metrics_port,
                     overrides=overrides,
+                    artifact_root=str(suite_run_dir),
                 )
             if artifact:
                 artifacts.append(artifact)
+            
+            print(f"[run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] completed run for suite={args.suite}, mode={suite_run.mode}")
+    summary_payload = {
+        "suite": args.suite,
+        "generated_at": datetime.now().isoformat(),
+        "suite_run_dir": str(suite_run_dir),
+        "artifacts": artifacts,
+    }
+    # Always write a copy inside the suite directory for provenance.
+    (suite_run_dir / "suite_summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
     if args.summary:
-        Path(args.summary).write_text(json.dumps({"artifacts": artifacts}, indent=2), encoding="utf-8")
+        Path(args.summary).write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
 
 def parse_args():
@@ -269,6 +299,10 @@ def parse_args():
     parser.add_argument("--agent-config", default="agent/agent.conf")
     parser.add_argument("--token-rate", type=int, default=None)
     parser.add_argument("--metrics-port", type=int, default=9105)
+    parser.add_argument(
+        "--override-modes",
+        help="Comma-separated list of modes to run instead of suite YAML (e.g. baseline)",
+    )
     parser.add_argument("--summary", help="Write JSON summary to path")
     return parser.parse_args()
 

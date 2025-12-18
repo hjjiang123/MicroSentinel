@@ -1,13 +1,12 @@
 workload: kv
 server:
-  # binary: "python3 experiments/workloads/kv/kv_server.py"
   implementation: memcached
   binary: memcached
-  bind_address: "211.65.193.185"
+  bind_address: "127.0.0.1"
   port: 7000
-  threads: 16
-  max_connections: 4096
-  numa_policy: "numactl --cpunodebind=0 --membind=0"
+  threads: 8
+  max_connections: 1024
+  numa_policy: ""
   dataset:
     key_space: 1048576
     value_size_bytes: 256
@@ -16,12 +15,9 @@ server:
     refill_rate: 2000
 clients:
   generator: "python3 experiments/workloads/kv/kv_client.py"
-  instances: 8
-  connections_per_instance: 128
-  remote:
-    host: "211.65.193.243"
-    workdir: "/home/hjjiang/MicroSentinel"
-    metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
+  instances: 4
+  connections_per_instance: 64
+  # local execution (no remote SSH)
   request_mix:
     get_ratio: 0.95
     set_ratio: 0.05

@@ -8,6 +8,7 @@ import contextlib
 import json
 import math
 import os
+import pwd
 import resource
 import shlex
 import shutil
@@ -49,6 +50,15 @@ class RemoteSpec:
 
     def wrap_command(self, argv: List[str]) -> List[str]:
         remote_cmd = " ".join(shlex.quote(arg) for arg in argv)
+
+        # Ensure the remote metrics directory exists before running any command that
+        # tries to write metrics/truth files there.
+        if self.metrics_dir:
+            metrics_dir = str(self.metrics_dir)
+            if metrics_dir.startswith("~/") and " " not in metrics_dir:
+                remote_cmd = f"mkdir -p {metrics_dir} && {remote_cmd}"
+            else:
+                remote_cmd = f"mkdir -p {shlex.quote(metrics_dir)} && {remote_cmd}"
         if self.workdir:
             if self.workdir.startswith("~/") and " " not in self.workdir:
                 remote_cmd = f"cd {self.workdir} && {remote_cmd}"
@@ -514,12 +524,25 @@ def _resolve_output_path(artifact_dir: Path, path_str: str) -> Path:
     return path
 
 
-def ensure_artifact_dir(workload: str) -> Path:
-    ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+def ensure_artifact_dir(workload: str, artifact_root: Optional[Path] = None) -> Path:
+    root = artifact_root or ARTIFACT_ROOT
+    root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    path = ARTIFACT_ROOT / f"{workload}_{timestamp}"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    base = f"{workload}_{timestamp}"
+
+    # Avoid collisions when multiple runs start within the same second.
+    # Historically we used second-resolution timestamps, so keep that naming
+    # scheme but add a suffix when needed.
+    for attempt in range(0, 1000):
+        suffix = "" if attempt == 0 else f"_{attempt}"
+        path = root / f"{base}{suffix}"
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+            return path
+        except FileExistsError:
+            continue
+
+    raise RuntimeError(f"failed to allocate unique artifact dir under {root} for {base}")
 
 
 def _metric_path(artifact_dir: Path, stem: str) -> Path:
@@ -607,6 +630,22 @@ def _serialize_command_spec(spec: CommandSpec) -> Dict:
     return data
 
 
+def _ensure_dir_writable_by_user(path: Path, user: str) -> None:
+    if os.geteuid() != 0:
+        return
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return
+    try:
+        if path.exists() and path.is_dir():
+            os.chown(path, pw.pw_uid, pw.pw_gid)
+            os.chmod(path, 0o755)
+    except Exception:
+        # Best-effort: do not fail the whole run on permission fixes.
+        return
+
+
 def _collect_remote_metrics(commands: List[CommandSpec], artifact_dir: Path) -> Tuple[Optional[Path], List[Dict]]:
     log_path = artifact_dir / "remote_fetch.log"
     errors: List[Dict] = []
@@ -626,6 +665,8 @@ def _collect_remote_metrics(commands: List[CommandSpec], artifact_dir: Path) -> 
             for local_path, remote_path in targets:
                 had_activity = True
                 local_path.parent.mkdir(parents=True, exist_ok=True)
+                if spec.remote.local_user and os.geteuid() == 0:
+                    _ensure_dir_writable_by_user(local_path.parent, spec.remote.local_user)
                 remote_src = f"{spec.remote.host}:{remote_path}"
                 scp_cmd = ["scp", *spec.remote.ssh_options, remote_src, str(local_path)]
                 if spec.remote.local_user and os.geteuid() == 0:
@@ -660,12 +701,17 @@ def build_kv_commands(
     overrides = overrides or {}
     specs: List[CommandSpec] = []
     server = cfg["server"].copy()
-    server_override = overrides.get("server", {})
+    server_override = overrides.get("server")
+    if not isinstance(server_override, dict):
+        server_override = {}
     server.update(server_override)
     impl = server.get("implementation", "builtin")
     if impl == "memcached":
-        cmd = [
-            server.get("binary", "memcached"),
+        cmd = [server.get("binary", "memcached")]
+        # memcached refuses to run as root unless -u is supplied.
+        if os.geteuid() == 0:
+            cmd += ["-u", str(server.get("run_as_user") or os.environ.get("SUDO_USER") or "nobody")]
+        cmd += [
             "-l",
             server.get("bind_address", "0.0.0.0"),
             "-p",
@@ -674,6 +720,8 @@ def build_kv_commands(
             str(server.get("threads", 16)),
             "-m",
             str(server.get("memory_mb", 1024)),
+            "-c",
+            str(server.get("max_connections", 4096)),
         ]
     elif impl == "external":
         cmd = _split_cmd(server["command"])
@@ -716,7 +764,10 @@ def build_kv_commands(
     )
 
     client_cfg = cfg["clients"].copy()
-    client_cfg.update(overrides.get("clients", {}))
+    client_override = overrides.get("clients")
+    if not isinstance(client_override, dict):
+        client_override = {}
+    client_cfg.update(client_override)
     remote = _build_remote_spec(client_cfg.get("remote"))
     impl = client_cfg.get("implementation", "builtin")
     for idx in range(client_cfg.get("instances", 1)):
@@ -824,7 +875,10 @@ def build_lb_commands(
     overrides = overrides or {}
     specs: List[CommandSpec] = []
     lb = cfg["lb_node"].copy()
-    lb.update(overrides.get("lb_node", {}))
+    lb_override = overrides.get("lb_node")
+    if not isinstance(lb_override, dict):
+        lb_override = {}
+    lb.update(lb_override)
     impl = lb.get("implementation", "builtin")
     if impl == "haproxy":
         cfg_path = _write_haproxy_cfg(lb, artifact_dir)
@@ -866,7 +920,10 @@ def build_lb_commands(
         )
 
     client = cfg["clients"].copy()
-    client.update(overrides.get("clients", {}))
+    client_override = overrides.get("clients")
+    if not isinstance(client_override, dict):
+        client_override = {}
+    client.update(client_override)
     metrics_path = _metric_path(artifact_dir, "lb_client")
     remote = _build_remote_spec(client.get("remote"))
     metrics_arg, remote_metrics = _resolve_metrics_destination(metrics_path, remote)
@@ -982,8 +1039,11 @@ def build_nfv_commands(
         )
         prev_port = next_port
 
-    traffic = cfg["traffic_generator"].copy()
-    traffic.update(overrides.get("traffic", {}))
+    traffic = cfg.get("traffic_generator", {}).copy()
+    traffic_override = overrides.get("traffic")
+    if not isinstance(traffic_override, dict):
+        traffic_override = {}
+    traffic.update(traffic_override)
     metrics_path = _metric_path(artifact_dir, "nfv_traffic")
     remote = _build_remote_spec(traffic.get("remote"))
     metrics_arg, remote_metrics = _resolve_metrics_destination(metrics_path, remote)
@@ -1151,11 +1211,14 @@ def execute_workload(
     token_rate: int,
     metrics_port: int,
     overrides: Optional[Dict] = None,
+    artifact_root: Optional[str] = None,
 ):
     overrides = overrides or {}
     cfg = load_config(workload, config_override)
-    artifact_dir = ensure_artifact_dir(cfg["workload"])
+    root_path = Path(artifact_root) if artifact_root else None
+    artifact_dir = ensure_artifact_dir(cfg["workload"], artifact_root=root_path)
     _log_progress(artifact_dir, f"[runner] starting workload={cfg['workload']} mode={mode} duration={duration}s")
+    print(f"Workload={cfg['workload']} Mode={mode} Duration={duration}s Artifacts={artifact_dir}")
     _capture_host_facts(artifact_dir)
     _log_progress(artifact_dir, "[runner] building command plan")
     commands = build_commands(cfg, duration, artifact_dir, overrides.get("workload"))
@@ -1234,85 +1297,133 @@ def execute_workload(
         "control_port": instr_overrides.get("control_port"),
     }
 
-    with contextlib.ExitStack() as stack:
-        _log_progress(artifact_dir, f"[runner] starting instrumentation mode={mode}")
+    running: List[Tuple[CommandSpec, object]] = []
+    monitor_logs: Dict[str, str] = {}
+    captured_exception: Optional[BaseException] = None
+    instrumentation_proc = None
 
-        if mode == "microsentinel":
-            _microsentinel_precheck(skip=bool(instr_overrides.get("bpf_skip_precheck", False)))
+    try:
+        with contextlib.ExitStack() as stack:
+            _log_progress(artifact_dir, f"[runner] starting instrumentation mode={mode}")
 
-        perf_skip_precheck = bool(instr_overrides.get("perf_skip_precheck", False))
-        if mode == "perf" and not perf_skip_precheck:
-            paranoid_path = Path("/proc/sys/kernel/perf_event_paranoid")
-            if paranoid_path.exists() and os.geteuid() != 0:
-                try:
-                    paranoid = int(paranoid_path.read_text(encoding="utf-8").strip())
-                except Exception:
-                    paranoid = None
-                # perf -a CPU-wide sampling generally requires CAP_PERFMON or relaxed paranoid.
-                if paranoid is not None and paranoid >= 1:
-                    msg = (
-                        "perf mode requires system-wide perf_event access, but kernel.perf_event_paranoid is "
-                        f"{paranoid} and the runner is not root. "
-                        "Either run with sufficient capabilities (e.g. sudo / CAP_PERFMON), or relax sysctl, e.g.:\n"
-                        "  sudo sysctl -w kernel.perf_event_paranoid=0\n"
-                        "(use -1 if you need kernel profiling)."
+            if mode == "microsentinel":
+                _microsentinel_precheck(skip=bool(instr_overrides.get("bpf_skip_precheck", False)))
+
+            perf_skip_precheck = bool(instr_overrides.get("perf_skip_precheck", False))
+            if mode == "perf" and not perf_skip_precheck:
+                paranoid_path = Path("/proc/sys/kernel/perf_event_paranoid")
+                if paranoid_path.exists() and os.geteuid() != 0:
+                    try:
+                        paranoid = int(paranoid_path.read_text(encoding="utf-8").strip())
+                    except Exception:
+                        paranoid = None
+                    # perf -a CPU-wide sampling generally requires CAP_PERFMON or relaxed paranoid.
+                    if paranoid is not None and paranoid >= 1:
+                        msg = (
+                            "perf mode requires system-wide perf_event access, but kernel.perf_event_paranoid is "
+                            f"{paranoid} and the runner is not root. "
+                            "Either run with sufficient capabilities (e.g. sudo / CAP_PERFMON), or relax sysctl, e.g.:\n"
+                            "  sudo sysctl -w kernel.perf_event_paranoid=0\n"
+                            "(use -1 if you need kernel profiling)."
+                        )
+                        _log_progress(artifact_dir, f"[runner] precheck failed: {msg}")
+                        raise ProcessLaunchError(msg)
+
+            # Track the instrumentation process PID so pidstat can attribute CPU/RSS.
+            instrumentation_proc = stack.enter_context(start_instrumentation(mode, artifact_dir, context))
+            if mode == "microsentinel":
+                _configure_microsentinel_agent(agent_config, ms_runtime_overrides, artifact_dir)
+
+            for spec in commands:
+                log_path = artifact_dir / spec.log_suffix
+                proc = stack.enter_context(
+                    managed_process(
+                        spec.name,
+                        spec.argv,
+                        log_path=log_path,
+                        env=spec.env,
+                        ready_wait=spec.ready_wait,
                     )
-                    _log_progress(artifact_dir, f"[runner] precheck failed: {msg}")
-                    raise ProcessLaunchError(msg)
-
-        stack.enter_context(start_instrumentation(mode, artifact_dir, context))
-        if mode == "microsentinel":
-            _configure_microsentinel_agent(agent_config, ms_runtime_overrides, artifact_dir)
-        running: List[Tuple[CommandSpec, object]] = []
-        for spec in commands:
-            log_path = artifact_dir / spec.log_suffix
-            proc = stack.enter_context(
-                managed_process(
-                    spec.name,
-                    spec.argv,
-                    log_path=log_path,
-                    env=spec.env,
-                    ready_wait=spec.ready_wait,
                 )
-            )
-            running.append((spec, proc))
-        _log_progress(artifact_dir, "[runner] all workload processes started")
-        monitor_logs = _launch_monitors(duration, artifact_dir, stack, [proc.pid for _, proc in running])
-        _log_progress(artifact_dir, "[runner] host monitors started; entering steady-state run")
-        time.sleep(duration)
+                running.append((spec, proc))
 
-        # Allow client-side generators a brief grace period to flush metrics/truth
-        # before the ExitStack teardown terminates all managed processes.
-        for spec, proc in running:
-            if spec.role != "client":
-                continue
+            # Record PIDs for downstream analysis (pidstat parsing, per-role CPU/RSS, etc).
             try:
-                proc.wait(timeout=CLIENT_GRACE_S)
+                plan.setdefault("processes", {})
+                if instrumentation_proc is not None:
+                    plan["processes"]["instrumentation"] = {
+                        "pid": int(getattr(instrumentation_proc, "pid", 0) or 0),
+                        "mode": mode,
+                    }
+                plan["processes"]["commands"] = {
+                    str(spec.name): {"pid": int(getattr(proc, "pid", 0) or 0), "role": str(spec.role)}
+                    for spec, proc in running
+                }
             except Exception:
                 pass
 
-    _log_progress(artifact_dir, "[runner] main duration elapsed; collecting remote metrics")
-    remote_log, remote_errors = _collect_remote_metrics(commands, artifact_dir)
-    if remote_log:
-        monitor_logs["remote_fetch"] = str(remote_log)
-    if remote_errors:
-        plan.setdefault("remote_fetch_errors", remote_errors)
-    recorder.record_monitors(monitor_logs)
-    recorder.capture_command_metrics(running)
+            _log_progress(artifact_dir, "[runner] all workload processes started")
+            tracked_pids: List[int] = []
+            try:
+                if instrumentation_proc is not None and getattr(instrumentation_proc, "pid", None):
+                    tracked_pids.append(int(instrumentation_proc.pid))
+            except Exception:
+                pass
+            tracked_pids.extend([int(proc.pid) for _, proc in running if getattr(proc, "pid", None)])
+            monitor_logs = _launch_monitors(duration, artifact_dir, stack, tracked_pids)
+            _log_progress(artifact_dir, "[runner] host monitors started; entering steady-state run")
+            time.sleep(duration)
 
-    if mode == "microsentinel":
-        addr, port = _resolve_control_endpoint(agent_config, instr_overrides)
-        # metrics may be bound separately; default to 127.0.0.1 unless overridden.
-        metrics_addr = instr_overrides.get("metrics_address") or "127.0.0.1"
+            # Allow client-side generators a brief grace period to flush metrics/truth
+            # before the ExitStack teardown terminates all managed processes.
+            for spec, proc in running:
+                if spec.role != "client":
+                    continue
+                try:
+                    proc.wait(timeout=CLIENT_GRACE_S)
+                except Exception:
+                    pass
+    except BaseException as exc:
+        captured_exception = exc
+        _log_progress(artifact_dir, f"[runner] exception: {type(exc).__name__}: {exc}")
+    finally:
+        _log_progress(artifact_dir, "[runner] collecting remote metrics")
         try:
-            metrics_port_int = int(metrics_port_value)
-        except Exception:
-            metrics_port_int = 9105
-        metrics_path = _fetch_prometheus_metrics(artifact_dir, str(metrics_addr), metrics_port_int)
-        if metrics_path:
-            monitor_logs["agent_metrics"] = str(metrics_path)
-    recorder.finalize()
-    _log_progress(artifact_dir, "[runner] run_result.json written; run complete")
+            remote_log, remote_errors = _collect_remote_metrics(commands, artifact_dir)
+            if remote_log:
+                monitor_logs["remote_fetch"] = str(remote_log)
+            if remote_errors:
+                plan.setdefault("remote_fetch_errors", []).extend(remote_errors)
+        except Exception as exc:
+            plan.setdefault("remote_fetch_errors", []).append(
+                {"error": f"remote metrics collection failed: {type(exc).__name__}: {exc}"}
+            )
+
+        recorder.record_monitors(monitor_logs)
+        recorder.capture_command_metrics(running)
+
+        if mode == "microsentinel":
+            # metrics may be bound separately; default to 127.0.0.1 unless overridden.
+            metrics_addr = instr_overrides.get("metrics_address") or "127.0.0.1"
+            try:
+                metrics_port_int = int(metrics_port_value)
+            except Exception:
+                metrics_port_int = 9105
+            metrics_path = _fetch_prometheus_metrics(artifact_dir, str(metrics_addr), metrics_port_int)
+            if metrics_path:
+                monitor_logs["agent_metrics"] = str(metrics_path)
+
+        if captured_exception is not None:
+            plan["runner_exception"] = {
+                "type": type(captured_exception).__name__,
+                "message": str(captured_exception),
+            }
+        recorder.finalize()
+        _log_progress(artifact_dir, "[runner] run_result.json written")
+
+    if captured_exception is not None:
+        raise captured_exception
+    _log_progress(artifact_dir, "[runner] run complete")
     return str(artifact_dir)
 
 
@@ -1329,6 +1440,7 @@ def run_workload(args):
             agent_config=args.agent_config,
             token_rate=args.token_rate,
             metrics_port=args.metrics_port,
+            artifact_root=args.artifact_root,
         )
     except ProcessLaunchError as exc:
         print(f"[workload_runner] error: {exc}", file=sys.stderr)
@@ -1348,6 +1460,11 @@ def parse_args():
     parser.add_argument("--agent-config", default="agent/agent.conf")
     parser.add_argument("--token-rate", type=int, default=None)
     parser.add_argument("--metrics-port", type=int, default=9105)
+    parser.add_argument(
+        "--artifact-root",
+        default=None,
+        help="Override artifact root (default: artifacts/experiments). Useful for grouping a suite run into its own directory.",
+    )
     return parser.parse_args()
 
 

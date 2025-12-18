@@ -22,21 +22,33 @@ workloads:
       rate_scan:
         samples_per_core: [500, 1000, 2000]
     overrides:
+      # NOTE: The default (memcached+memtier) requires `memtier_benchmark` on the remote host.
+      # This override forces the built-in Python KV server+client so the suite can run
+      # end-to-end on a minimal two-node setup.
       server:
-        implementation: memcached
-        binary: memcached
+        implementation: builtin
+        binary: "python3 experiments/workloads/kv/kv_server.py"
+        bind_address: "211.65.193.185"
+        port: 7000
+        threads: 16
         numa_policy: "numactl --cpunodebind=0 --membind=0"
+        dataset:
+          key_space: 1048576
+          value_size_bytes: 256
       clients:
-        implementation: memtier
+        implementation: builtin
         remote:
           host: "211.65.193.243"
           workdir: "/home/hjjiang/MicroSentinel"
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
-        generator: memtier_benchmark
-        connections_per_instance: 64
-        options:
-          ratio: "95:5"
-          data_size: 256
+        generator: "python3 experiments/workloads/kv/kv_client.py"
+        instances: 8
+        connections_per_instance: 128
+        request_mix:
+          get_ratio: 0.95
+          set_ratio: 0.05
+        key_distribution: "zipf"
+        zipf_theta: 1.0
   - name: load_balancer
     config: experiments/configs/workloads/load_balancer.yaml
     repetitions: 3
@@ -52,8 +64,7 @@ workloads:
           - ["BR_MISP_RETIRED.ALL_BRANCHES"]
     overrides:
       lb_node:
-        implementation: haproxy
-        binary: haproxy
+        # Keep the default Python load balancer; haproxy requires additional packages.
         numa_policy: "numactl --cpunodebind=0 --membind=0"
       clients:
         implementation: builtin
@@ -75,12 +86,8 @@ workloads:
         samples_per_core: [500, 1000, 2000]
     overrides:
       traffic_generator:
-        implementation: pktgen
+        # Keep the default Python traffic generator; pktgen requires extra tooling and NIC setup.
         remote:
           host: "211.65.193.243"
           workdir: "/home/hjjiang/MicroSentinel"
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
-        binary: /opt/pktgen/run_pktgen.sh
-        interface: ens6f0
-        rate_pps: 2000000
-        packet_size: 64

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import statistics
 import urllib.parse
 import urllib.request
@@ -135,6 +136,49 @@ def _parse_generated_at(value: Any) -> Optional[datetime]:
 
 def _dt_to_unix_ns(dt: datetime) -> int:
     return int(dt.timestamp() * 1_000_000_000)
+
+
+_TS_RE = re.compile(r'"ts"\s*:\s*(\d+)')
+
+
+def _extract_ts_range_from_instrumentation_log(artifact_dir: Path) -> Optional[Tuple[int, int]]:
+    """Best-effort: parse ClickHouse JSONEachRow payload in instrumentation logs.
+
+    Many runs write `instrumentation_microsentinel.log` containing lines like:
+      {"ts":585914251222648,...}
+
+    Those `ts` values match what's inserted into ClickHouse tables (`DateTime64(9)`),
+    even if they are not wallclock UNIX time (e.g. monotonic ns interpreted as epoch).
+    """
+
+    log_path = artifact_dir / "instrumentation_microsentinel.log"
+    if not log_path.exists():
+        return None
+
+    t0: Optional[int] = None
+    t1: Optional[int] = None
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"ts"' not in line:
+                    continue
+                m = _TS_RE.search(line)
+                if not m:
+                    continue
+                try:
+                    ts = int(m.group(1))
+                except Exception:
+                    continue
+                if ts <= 0:
+                    continue
+                t0 = ts if t0 is None else min(t0, ts)
+                t1 = ts if t1 is None else max(t1, ts)
+    except Exception:
+        return None
+
+    if t0 is None or t1 is None or t1 <= t0:
+        return None
+    return t0, t1
 
 
 class ClickHouse:
@@ -259,21 +303,30 @@ def analyze_one(
         }
     )
 
-    if not generated_at:
-        # Best-effort fallback: use mtime of run_result.json if present.
-        try:
-            ts = rr_path.stat().st_mtime
-            generated_at = datetime.fromtimestamp(ts, tz=timezone.utc)
-        except Exception:
-            generated_at = None
+    # Prefer deriving the ClickHouse query window from instrumentation logs.
+    # This keeps analysis working even when the agent writes non-wallclock timestamps.
+    ts_range = _extract_ts_range_from_instrumentation_log(artifact_dir)
+    if ts_range is not None:
+        base_t0, base_t1 = ts_range
+        t0 = base_t0 - slack_s * 1_000_000_000
+        t1 = base_t1 + slack_s * 1_000_000_000
+        out["window"] = {"t0_unix_ns": t0, "t1_unix_ns": t1, "source": "instrumentation_log"}
+    else:
+        if not generated_at:
+            # Best-effort fallback: use mtime of run_result.json if present.
+            try:
+                ts = rr_path.stat().st_mtime
+                generated_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+            except Exception:
+                generated_at = None
 
-    if not generated_at or duration <= 0:
-        out["error"] = "cannot derive time window (missing generated_at or duration)"
-        return out
+        if not generated_at or duration <= 0:
+            out["error"] = "cannot derive time window (missing generated_at or duration)"
+            return out
 
-    t1 = _dt_to_unix_ns(generated_at) + slack_s * 1_000_000_000
-    t0 = _dt_to_unix_ns(generated_at) - (duration + slack_s) * 1_000_000_000
-    out["window"] = {"t0_unix_ns": t0, "t1_unix_ns": t1}
+        t1 = _dt_to_unix_ns(generated_at) + slack_s * 1_000_000_000
+        t0 = _dt_to_unix_ns(generated_at) - (duration + slack_s) * 1_000_000_000
+        out["window"] = {"t0_unix_ns": t0, "t1_unix_ns": t1, "source": "generated_at"}
 
     host = _guess_host(ch, rollup_table, t0, t1)
     if not host:

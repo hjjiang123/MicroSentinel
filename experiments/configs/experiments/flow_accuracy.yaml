@@ -22,8 +22,6 @@ workloads:
         - '{"type":"flow","value":"10.10."}'
     overrides:
       lb_node:
-        implementation: haproxy
-        binary: haproxy
         numa_policy: "numactl --cpunodebind=0 --membind=0"
       clients:
         implementation: builtin

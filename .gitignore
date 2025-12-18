@@ -6,3 +6,4 @@ temp2/*
 docs/*
 artifacts/*
 perf.data*
+docs/exp_design.md

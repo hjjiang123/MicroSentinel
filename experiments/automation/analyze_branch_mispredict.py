@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import statistics
 import urllib.parse
 import urllib.request
@@ -141,6 +142,40 @@ def _parse_generated_at(value: Any) -> Optional[datetime]:
 
 def _dt_to_unix_ns(dt: datetime) -> int:
     return int(dt.timestamp() * 1_000_000_000)
+
+
+_TS_RE = re.compile(r'"ts"\s*:\s*(\d+)')
+
+
+def _extract_ts_range_from_instrumentation_log(artifact_dir: Path) -> Optional[Tuple[int, int]]:
+    log_path = artifact_dir / "instrumentation_microsentinel.log"
+    if not log_path.exists():
+        return None
+
+    t0: Optional[int] = None
+    t1: Optional[int] = None
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"ts"' not in line:
+                    continue
+                m = _TS_RE.search(line)
+                if not m:
+                    continue
+                try:
+                    ts = int(m.group(1))
+                except Exception:
+                    continue
+                if ts <= 0:
+                    continue
+                t0 = ts if t0 is None else min(t0, ts)
+                t1 = ts if t1 is None else max(t1, ts)
+    except Exception:
+        return None
+
+    if t0 is None or t1 is None or t1 <= t0:
+        return None
+    return t0, t1
 
 
 def _mean(values: List[float]) -> Optional[float]:
@@ -260,12 +295,21 @@ def analyze_one(
 
     generated_at = _parse_generated_at(rr.get("generated_at"))
     duration = _as_int(plan.get("duration")) or 0
-    if not generated_at or duration <= 0:
-        out["error"] = "cannot derive time window"
-        return out
 
-    t1 = _dt_to_unix_ns(generated_at) + slack_s * 1_000_000_000
-    t0 = _dt_to_unix_ns(generated_at) - (duration + slack_s) * 1_000_000_000
+    ts_range = _extract_ts_range_from_instrumentation_log(artifact_dir)
+    if ts_range is not None:
+        base_t0, base_t1 = ts_range
+        t0 = base_t0 - slack_s * 1_000_000_000
+        t1 = base_t1 + slack_s * 1_000_000_000
+        window_src = "instrumentation_log"
+    else:
+        if not generated_at or duration <= 0:
+            out["error"] = "cannot derive time window"
+            return out
+
+        t1 = _dt_to_unix_ns(generated_at) + slack_s * 1_000_000_000
+        t0 = _dt_to_unix_ns(generated_at) - (duration + slack_s) * 1_000_000_000
+        window_src = "generated_at"
 
     host = _guess_host(ch, rollup_table, t0, t1)
     if not host:
@@ -331,7 +375,7 @@ def analyze_one(
             "workload": str(plan.get("workload") or ""),
             "mode": str(plan.get("mode") or ""),
             "duration": duration,
-            "window": {"t0_unix_ns": t0, "t1_unix_ns": t1},
+            "window": {"t0_unix_ns": t0, "t1_unix_ns": t1, "source": window_src},
             "host": host,
             "client_variant": client_variant,
             "delta_us": _as_int(instr.get("delta_us")),
