@@ -72,13 +72,36 @@ def _parse_mpstat(path: Path) -> Optional[float]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return None
-    avg_line = next((ln for ln in lines if ln.startswith("Average:")), None)
-    if not avg_line:
+
+    # mpstat output varies by version and locale.
+    # Common shapes:
+    #   Average:  all  %usr ... %idle
+    #   平均时间:  all  %usr ... %idle
+    #   <time> all  %usr ... %idle
+    # We want the final summary (usually at the end). We look for a line
+    # that contains the CPU aggregate token 'all' and whose last column is
+    # a float (%idle). Scanning from the bottom makes it very likely we pick
+    # the final average line.
+    candidate_tokens: Optional[List[str]] = None
+    for ln in reversed(lines):
+        ln = ln.strip()
+        if not ln:
+            continue
+        parts = ln.split()
+        if "all" not in parts:
+            continue
+        try:
+            float(parts[-1])
+        except Exception:
+            continue
+        candidate_tokens = parts
+        break
+
+    if not candidate_tokens:
         return None
-    tokens = avg_line.split()
-    # mpstat output: Average:  all  %usr %nice %sys %iowait %irq %soft %steal %guest %gnice %idle
+
     try:
-        idle = float(tokens[-1])
-    except (ValueError, IndexError):
+        idle = float(candidate_tokens[-1])
+    except Exception:
         return None
     return max(0.0, min(100.0, 100.0 - idle))

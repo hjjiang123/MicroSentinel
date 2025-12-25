@@ -112,11 +112,25 @@ def _extract_suite(plan: Optional[Dict[str, object]]) -> Optional[str]:
     return str(suite) if suite else None
 
 
-def _parse_truth(path: Path) -> List[TruthFlow]:
+def _parse_truth(path: Path) -> Tuple[List[TruthFlow], str]:
     raw = _load_json(path)
     flows: List[TruthFlow] = []
     if not isinstance(raw, list):
-        return flows
+        return flows, "unknown"
+
+    # Prefer wall-clock Unix time if present; otherwise fall back to monotonic time.
+    time_domain = "monotonic_ns"
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        events = entry.get("events")
+        if not isinstance(events, list) or not events:
+            continue
+        ev0 = events[0]
+        if isinstance(ev0, dict) and ("start_unix_ns" in ev0 or "end_unix_ns" in ev0):
+            time_domain = "unix_ns"
+            break
+
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -133,8 +147,12 @@ def _parse_truth(path: Path) -> List[TruthFlow]:
             for ev in events:
                 if not isinstance(ev, dict):
                     continue
-                s = ev.get("start_ns")
-                e = ev.get("end_ns")
+                if time_domain == "unix_ns":
+                    s = ev.get("start_unix_ns")
+                    e = ev.get("end_unix_ns")
+                else:
+                    s = ev.get("start_ns")
+                    e = ev.get("end_ns")
                 try:
                     s_ns = int(s)
                     e_ns = int(e)
@@ -146,7 +164,7 @@ def _parse_truth(path: Path) -> List[TruthFlow]:
         if intervals:
             intervals.sort()
             flows.append(TruthFlow(flow_id=flow_id, intervals=_merge_intervals(intervals)))
-    return flows
+    return flows, time_domain
 
 
 def _merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -221,6 +239,7 @@ def _guess_clickhouse_host(ch: ClickHouse, raw_table: str, t0: int, t1: int) -> 
         f"GROUP BY host ORDER BY c DESC LIMIT 1"
     )
     rows = _ch_rows(ch.query_json(sql))
+    print(f"Debug: ClickHouse host guess rows: {rows}")
     if not rows:
         return None
     return rows[0].get("host")
@@ -259,7 +278,7 @@ def analyze_single_artifact(
         report["error"] = "ground truth file not found in artifact dir"
         return report
 
-    truth = _parse_truth(truth_path)
+    truth, truth_time_domain = _parse_truth(truth_path)
     t0, t1 = _truth_range_ns(truth)
     if t0 <= 0 or t1 <= 0 or t1 <= t0:
         report["error"] = "invalid ground truth time range"
@@ -269,6 +288,7 @@ def analyze_single_artifact(
     report["truth_file"] = str(truth_path)
     report["truth_flows"] = len(truth)
     report["time_range_ns"] = {"start": t0, "end": t1}
+    report["truth_time_domain"] = truth_time_domain
     report["window_ns"] = window_ns
 
     conf = _parse_agent_conf(agent_conf)
@@ -280,6 +300,14 @@ def analyze_single_artifact(
     ch = ClickHouse(endpoint)
 
     try:
+        if truth_time_domain != "unix_ns":
+            report.setdefault("warnings", [])
+            if isinstance(report["warnings"], list):
+                report["warnings"].append(
+                    "truth uses monotonic_ns; ClickHouse queries assume Unix epoch ns. "
+                    "Regenerate truth with start_unix_ns/end_unix_ns for accurate alignment."
+                )
+
         host = _guess_clickhouse_host(ch, raw_table, t0, t1)
         report["clickhouse"] = {"endpoint": endpoint, "host": host, "raw_table": raw_table, "rollup_table": rollup_table}
         if not host:
@@ -291,7 +319,7 @@ def analyze_single_artifact(
         total_sql = (
             f"SELECT count() AS total, countIf(flow_id != 0) AS attributed "
             f"FROM {raw_table} "
-            f"WHERE host = {host_sql} AND toUnixTimestamp64Nano(ts) BETWEEN {t0} AND {t1}"
+            f"WHERE host = {host_sql} AND toUnixTimestamp64Nano(ingest_ts) BETWEEN {t0} AND {t1}"
         )
         total_row = _ch_rows(ch.query_json(total_sql))
         total = int(total_row[0].get("total", 0)) if total_row else 0

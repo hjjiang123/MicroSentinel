@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate paper figures for §5.1–§5.7 from experiment artifacts.
 
 This is a thin "paper glue" wrapper around existing analysis scripts:
@@ -337,7 +336,7 @@ def _write_recorded_metrics_csv(artifact_root: Path, out_csv: Path, *, suite: st
 def _plot_5_1_overhead(artifact_root: Path, out_dir: Path) -> None:
     _ensure_matplotlib()
     import matplotlib.pyplot as plt
-    # print("Extracting overhead points from artifacts ", artifact_root)
+    print("Extracting overhead points from artifacts ", artifact_root)
     pts = _extract_overhead_points(artifact_root, suite="overhead")
     if not pts:
         raise RuntimeError("No overhead points found (suite=overhead)")
@@ -346,7 +345,7 @@ def _plot_5_1_overhead(artifact_root: Path, out_dir: Path) -> None:
     by_workload: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
     for p in pts:
         w = by_workload.setdefault(p.workload, {})
-        m = w.setdefault(p.mode, {"throughput": [], "latency_p99_us": []})                    
+        m = w.setdefault(p.mode, {"throughput": [], "latency_p99_us": []})
         if p.throughput is not None:
             m["throughput"].append(p.throughput)
         if p.latency_p99_us is not None:

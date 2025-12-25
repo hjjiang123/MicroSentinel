@@ -4,12 +4,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <errno.h>
 #include <fstream>
 #include <iostream>
 #include <random>
 #include <sstream>
 #include <thread>
+#include <exception>
 
 #include "micro_sentinel/scope_logger.h"
 
@@ -326,11 +328,21 @@ void PerfConsumer::DrainCpu(int index) {
             size_t raw_bytes = record->size - sizeof(*record);
             if (raw_bytes > sizeof(uint32_t)) {
                 auto *raw_size = reinterpret_cast<uint32_t *>(record + 1);
+                // std::cout<< "PerfConsumer::DrainCpu: Sample size declared=" << *raw_size
+                //          << " available=" << raw_bytes - sizeof(uint32_t) << std::endl;
                 size_t declared = *raw_size;
                 size_t avail = raw_bytes - sizeof(uint32_t);
                 size_t payload_size = std::min<size_t>(declared, avail);
-                void *payload = reinterpret_cast<char *>(raw_size + 1);
-                DispatchSample(payload, payload_size);
+                // Handle ring buffer wrap-around: the payload may be split
+                // across the end of the circular buffer, so copy into a
+                // contiguous temporary buffer before dispatching.
+                size_t start_offset = static_cast<size_t>(tail + sizeof(*record) + sizeof(uint32_t)) & ctx.data_mask;
+                std::vector<char> tmp(payload_size);
+                size_t first = std::min(payload_size, ctx.data_size - start_offset);
+                std::memcpy(tmp.data(), data + start_offset, first);
+                if (first < payload_size)
+                    std::memcpy(tmp.data() + first, data, payload_size - first);
+                DispatchSample(tmp.data(), payload_size);
             }
         } else if (record->type == PERF_RECORD_LOST) {
             struct LostPayload {
@@ -352,14 +364,17 @@ void PerfConsumer::DispatchSample(const void *data, size_t size) {
     if (!callback_ || size < sizeof(Sample))
         return;
     Sample sample{};
-    // std::cout<< "DispatchSample called with size: " << size << std::endl;
+    // std::cout<< "DispatchSample called with size: " << std::min<size_t>(sizeof(Sample), size) << std::endl;
+    
+    // std::memcpy(&sample, data, 324);
     std::memcpy(&sample, data, std::min<size_t>(sizeof(Sample), size));
-
+    
+    // std::cout<< "Sample PMU Event: " << sample.pmu_event << std::endl;
     LbrStack stack;
     if (sample.lbr_nr > 0 && sample.lbr_nr <= MS_LBR_MAX) {
         stack.resize(sample.lbr_nr);
         for (size_t i = 0; i < stack.size(); ++i)
-            stack[i] = sample.lbr[i];
+        stack[i] = sample.lbr[i];
     }
     callback_(sample, stack);
 }

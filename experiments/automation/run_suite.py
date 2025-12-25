@@ -41,7 +41,7 @@ def _warn_unknown_keys(label: str, mapping: Dict) -> None:
     unknown = sorted(set(mapping.keys()) - ALLOWED_SUITE_KEYS)
     if unknown:
         print(
-            f"[run_suite] warning: unrecognized top-level keys {unknown} in {label}; they will be ignored",
+            f"  [run_suite] warning: unrecognized top-level keys {unknown} in {label}; they will be ignored",
             file=sys.stderr,
         )
 
@@ -238,11 +238,12 @@ def run_suite(args):
     runs = build_runs(suite, args.duration, mode_override=mode_override)
     warmup_s = int(suite.get("warmup_s") or 0)
     for suite_run in runs:
-        for _ in range(suite_run.repetitions):
+        for _ in range(suite_run.repetitions): 
             overrides = deep_merge({}, suite_run.overrides)
             if warmup_s > 0 and not args.dry_run:
                 warmup_overrides = deep_merge(overrides, {"annotations": {"phase": "warmup"}})
                 with apply_mutations(warmup_overrides.get("mutations")):
+                    print(f"  [run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] starting warmup for suite={args.suite}, mode={suite_run.mode}, suite repetition={_ + 1}/{suite_run.repetitions}")
                     execute_workload(
                         workload=suite_run.workload,
                         mode="baseline",
@@ -258,6 +259,7 @@ def run_suite(args):
                         artifact_root=str(suite_run_dir),
                     )
             with apply_mutations(overrides.get("mutations")):
+                print(f"  [run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] starting run for suite={args.suite}, mode={suite_run.mode}, suite repetition={_ + 1}/{suite_run.repetitions}")
                 artifact = execute_workload(
                     workload=suite_run.workload,
                     mode=suite_run.mode,
@@ -275,7 +277,7 @@ def run_suite(args):
             if artifact:
                 artifacts.append(artifact)
             
-            print(f"[run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] completed run for suite={args.suite}, mode={suite_run.mode}")
+            print(f"  [run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] completed run for suite={args.suite}, mode={suite_run.mode}")
     summary_payload = {
         "suite": args.suite,
         "generated_at": datetime.now().isoformat(),

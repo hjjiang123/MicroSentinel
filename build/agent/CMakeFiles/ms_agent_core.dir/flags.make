@@ -6,5 +6,5 @@ CXX_DEFINES = -DMS_AGENT_LIB -DMS_WITH_LIBBPF
 
 CXX_INCLUDES = -I/home/hjjiang/MicroSentinel/agent/include -I/home/hjjiang/MicroSentinel/agent/../bpf -I/home/hjjiang/tools/libbpf/src/build/root/usr/include -I/home/hjjiang/tools/libbpf/src/build/root/usr/include/bpf
 
-CXX_FLAGS = -fPIC -std=gnu++2a
+CXX_FLAGS =  -g -fPIC -std=gnu++2a
 

@@ -2,6 +2,7 @@
 -- norm_cost stores the per-sample normalized contribution derived from the rotating PMU scale.
 CREATE TABLE IF NOT EXISTS ms_raw_samples (
     ts          DateTime64(9) CODEC(Delta, ZSTD(3)),
+    ingest_ts   DateTime64(9) DEFAULT now64(9) CODEC(Delta, ZSTD(3)),
     host        String,
     cpu         UInt16,
     pid         UInt32,
@@ -23,6 +24,7 @@ ORDER BY (host, ts, cpu);
 
 CREATE TABLE IF NOT EXISTS ms_flow_rollup (
     window_start DateTime64(9) CODEC(Delta, ZSTD(3)),
+    ingest_ts    DateTime64(9) DEFAULT now64(9) CODEC(Delta, ZSTD(3)),
     host         String,
     flow_id      UInt64,
     function_id  UInt64,

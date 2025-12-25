@@ -1,8 +1,8 @@
 suite: overhead
 run_s: 300
 warmup_s: 30
-repetitions: 3
-modes: [baseline, perf, microsentinel]
+repetitions: 1
+modes: [baseline]
 overrides:
   instrumentation:
     pmu_events: "cycles,LLC-load-misses"
@@ -12,8 +12,8 @@ overrides:
 workloads:
   - name: kv
     config: experiments/configs/workloads/kv.yaml
-    repetitions: 3
-    modes: [baseline, perf, microsentinel]
+    repetitions: 1
+    modes: [baseline]
     parameters:
       delta_values_us: [5, 10, 20]
       pmu_events:
@@ -52,7 +52,7 @@ workloads:
   - name: load_balancer
     config: experiments/configs/workloads/load_balancer.yaml
     repetitions: 3
-    modes: [baseline, perf, microsentinel]
+    modes: [baseline]
     parameters:
       pmu_events:
         - ["cycles", "LLC-load-misses"]
@@ -77,7 +77,7 @@ workloads:
   - name: nfv_service_chain
     config: experiments/configs/workloads/nfv_service_chain.yaml
     repetitions: 3
-    modes: [baseline, perf, microsentinel]
+    modes: [baseline]
     parameters:
       pmu_events:
         - ["LLC-load-misses"]

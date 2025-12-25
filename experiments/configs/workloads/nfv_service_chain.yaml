@@ -13,7 +13,7 @@ chain:
       truth_limit: 4096
     - name: "rate_limiter"
       binary: "python3 experiments/workloads/nfv/rate_limiter.py"
-      target_pps: 2_000_000
+      target_pps: 1_00_000
       truth_log: "truth/rate_limiter_events.json"
       truth_limit: 4096
     - name: "logger"
@@ -28,7 +28,7 @@ traffic_generator:
   packet_size_bytes: [64, 256, 1500]
   mix_ratio: [0.5, 0.3, 0.2]
   rate_mode: "pps"
-  rate_values: [1_000_000, 2_000_000, 4_000_000]
+  rate_values: [150_000, 190_000, 230_000]
   dst_ports: [80, 443, 8443]
   tenants: ["tenant-a", "tenant-b", "tenant-c"]
   truth_log: "truth/traffic_emit.json"

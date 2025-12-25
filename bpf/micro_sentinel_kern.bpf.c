@@ -767,7 +767,7 @@ int ms_pmu_handler(struct bpf_perf_event_data *ctx)
             bpf_printk("ms_pmu_handler: LBR from=0x%llx to=0x%llx\n", stack[i].from, stack[i].to);
         }
     }
-
+    // bpf_printk("sizeof ms_sample=%u lbr_nr=%u\n", sizeof(sample), sample.lbr_nr);
     if (bpf_perf_event_output(ctx, &ms_events, BPF_F_CURRENT_CPU, &sample, sizeof(sample)) < 0) {
         bpf_printk("ms_pmu_handler: bpf_perf_event_output failed\n");
         goto out;

@@ -72,6 +72,7 @@ async def flow_task(
     payload: bytes,
     flow_id: int,
     truth_buffer: Optional[List[Tuple[int, int]]],
+    per_flow_interval: float = 0.0,
 ) -> FlowResult:
     deadline = time.monotonic() + duration
     latencies: List[float] = []
@@ -106,16 +107,26 @@ async def flow_task(
         pass
 
     try:
+        # Simple per-flow pacing using a next-send timestamp. If per_flow_interval
+        # is 0.0 then operate as fast as possible.
+        next_send = time.monotonic()
         while time.monotonic() < deadline:
             start = time.monotonic_ns()
+            start_unix = time.time_ns()
             writer.write(payload)
             await writer.drain()
             await reader.readexactly(len(payload))
             end = time.monotonic_ns()
+            end_unix = time.time_ns()
             latencies.append((end - start) / 1_000.0)
             operations += 1
             if truth_buffer is not None:
-                truth_buffer.append((start, end))
+                truth_buffer.append((start, end, start_unix, end_unix))
+            if per_flow_interval and per_flow_interval > 0.0:
+                next_send += per_flow_interval
+                to_sleep = next_send - time.monotonic()
+                if to_sleep > 0:
+                    await asyncio.sleep(to_sleep)
     except Exception:
         errors += 1
     finally:
@@ -161,6 +172,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flows", type=int, default=128, help="Concurrent TCP flows")
     parser.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
     parser.add_argument("--payload", type=int, default=512, help="Bytes per request")
+    parser.add_argument("--rate", type=float, default=0.0, help="Total requests per second across all flows (0 = unlimited)")
     parser.add_argument("--metrics-file", help="Optional JSON file to write metrics to")
     parser.add_argument("--ground-truth-log", help="Optional JSON file with per-flow request windows")
     return parser.parse_args()
@@ -172,13 +184,20 @@ def _write_ground_truth(path: str, results: Iterable[FlowResult]) -> None:
         if not res.ground_truth:
             continue
         tuple_info = getattr(res, "tuple_info", None)
+        # Ground truth is primarily used for aligning against ClickHouse `DateTime64(9)`
+        # timestamps. We record both monotonic and wall-clock time.
         events.append(
             {
                 "flow_id": res.flow_id,
                 "tuple": tuple_info,
                 "events": [
-                    {"start_ns": start, "end_ns": end}
-                    for start, end in res.ground_truth
+                    {
+                        "start_ns": start,
+                        "end_ns": end,
+                        "start_unix_ns": start_unix,
+                        "end_unix_ns": end_unix,
+                    }
+                    for start, end, start_unix, end_unix in res.ground_truth
                 ],
             }
         )
@@ -194,6 +213,13 @@ async def main() -> None:
     if args.ground_truth_log:
         truth_buffers = [[] for _ in range(args.flows)]
 
+    per_flow_interval = 0.0
+    if args.rate and args.rate > 0.0 and args.flows:
+        print(f"Throttling to total rate {args.rate} req/s across {args.flows} flows")
+        per_flow_rate = float(args.rate) / float(args.flows)
+        if per_flow_rate > 0.0:
+            per_flow_interval = 1.0 / per_flow_rate
+
     tasks = [
         asyncio.create_task(
             flow_task(
@@ -203,6 +229,7 @@ async def main() -> None:
                 payload,
                 idx,
                 truth_buffers[idx] if truth_buffers is not None else None,
+                per_flow_interval,
             )
         )
         for idx in range(args.flows)

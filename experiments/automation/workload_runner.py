@@ -276,29 +276,99 @@ def _resolve_control_endpoint(config_path: str, overrides: Dict[str, object]) ->
 
 
 def _wait_for_control_plane(address: str, port: int, timeout_s: float = 10.0) -> bool:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    """Best-effort readiness check for the agent control plane.
+
+    We first wait for TCP accept, then try an HTTP POST "ping" that should
+    deterministically return 400 from MicroSentinel's control plane.
+
+    This avoids false positives where some other service is listening on the
+    port (or a proxy is up but the agent isn't ready yet).
+    """
+
+    def _tcp_ready() -> bool:
         try:
             with socket.create_connection((address, port), timeout=1.0):
                 return True
         except OSError:
-            time.sleep(0.25)
+            return False
+
+    def _http_ping() -> bool:
+        # Control plane only accepts POSTs; invalid mode returns 400.
+        base_url = f"http://{address}:{port}"
+        data = json.dumps({"mode": "__ping__"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/mode",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2.0):
+                # If we get 200 here, it's also our control plane and it's ready.
+                return True
+        except urllib.error.HTTPError as exc:
+            return exc.code == 400
+        except Exception:
+            return False
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _tcp_ready() and _http_ping():
+            return True
+        time.sleep(0.25)
     return False
 
 
 def _post_control_request(base_url: str, path: str, payload: Dict[str, object]) -> Tuple[bool, Optional[str]]:
+    url = f"{base_url}{path}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{base_url}{path}",
+        url,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5.0):
-            return True, None
-    except urllib.error.URLError as exc:
-        return False, str(exc)
+
+    # Control plane can take a moment to become ready after the agent process
+    # starts (especially when loading BPF). Be tolerant to transient failures.
+    retry_delays_s = (0.2, 0.5, 1.0, 2.0)
+    last_err: Optional[str] = None
+
+    for attempt, delay in enumerate((0.0, *retry_delays_s), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                # Drain body for keep-alive friendliness.
+                try:
+                    resp.read(1)
+                except Exception:
+                    pass
+                return True, None
+        except urllib.error.HTTPError as exc:
+            # Include response body when possible for debugging.
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            body = body.strip()
+            last_err = f"HTTP {exc.code} {exc.reason} url={url}" + (f" body={body}" if body else "")
+            if exc.code in (502, 503, 504) and attempt <= len(retry_delays_s) + 1:
+                continue
+            return False, last_err
+        except urllib.error.URLError as exc:
+            last_err = f"URLError url={url} err={exc}"
+            # transient network/refused
+            if attempt <= len(retry_delays_s) + 1:
+                continue
+            return False, last_err
+        except Exception as exc:
+            last_err = f"{type(exc).__name__} url={url} err={exc}"
+            if attempt <= len(retry_delays_s) + 1:
+                continue
+            return False, last_err
+    return False, last_err
 
 
 def _fetch_prometheus_metrics(artifact_dir: Path, address: str, port: int) -> Optional[Path]:
@@ -937,6 +1007,27 @@ def build_lb_commands(
     else:
         truth_arg = None
     impl = client.get("implementation", "builtin")
+    rate = client.get("rate")
+    # If the client will be run on a remote host and we intend to pass --rate,
+    # stage the local builtin generator onto the remote so it supports the same args.
+    if remote and remote.workdir and rate is not None:
+        gen = client.get("generator", "")
+        # Expect generator like: "python3 experiments/workloads/lb/lb_client.py"
+        if isinstance(gen, str) and gen.strip().endswith("experiments/workloads/lb/lb_client.py"):
+            local_path = Path("experiments/workloads/lb/lb_client.py")
+            if local_path.exists():
+                target_dir = Path(remote.workdir) / "experiments" / "workloads" / "lb"
+                target_path = f"{str(target_dir)}/lb_client.py"
+                # IMPORTANT: when the suite is run with sudo (for eBPF), SSH/SCP
+                # must still use the invoking user's credentials/known_hosts.
+                # RemoteSpec.local_user captures that and _collect_remote_metrics
+                # already respects it; do the same here.
+                mkdir_cmd = remote.wrap_command(["mkdir", "-p", str(target_dir)])
+                scp_cmd = ["scp", *remote.ssh_options, str(local_path), f"{remote.host}:{target_path}"]
+                if remote.local_user and os.geteuid() == 0:
+                    scp_cmd = ["sudo", "-u", remote.local_user, *scp_cmd]
+                specs.append(CommandSpec("lb-client-deploy-mkdir", mkdir_cmd, "lb_client_deploy_mkdir.log", ready_wait=0.1))
+                specs.append(CommandSpec("lb-client-deploy-scp", scp_cmd, "lb_client_deploy_scp.log", ready_wait=0.1))
     if impl == "wrk":
         url = client.get("url", f"http://{lb.get('bind_address', '127.0.0.1')}:{lb.get('port', 7100)}")
         cmd = _split_cmd(client.get("binary", "wrk")) + [
@@ -966,6 +1057,9 @@ def build_lb_commands(
             "--metrics-file",
             metrics_arg,
         ]
+        # forward an optional per-workload total rate to the client generator
+        if rate is not None:
+            cmd += ["--rate", str(rate)]
     if truth_path:
         cmd += ["--ground-truth-log", truth_arg]
     cmd = _wrap_remote_command(cmd, remote)
@@ -1218,7 +1312,7 @@ def execute_workload(
     root_path = Path(artifact_root) if artifact_root else None
     artifact_dir = ensure_artifact_dir(cfg["workload"], artifact_root=root_path)
     _log_progress(artifact_dir, f"[runner] starting workload={cfg['workload']} mode={mode} duration={duration}s")
-    print(f"Workload={cfg['workload']} Mode={mode} Duration={duration}s Artifacts={artifact_dir}")
+    print(f"  Workload={cfg['workload']} Mode={mode} Duration={duration}s Artifacts={artifact_dir}")
     _capture_host_facts(artifact_dir)
     _log_progress(artifact_dir, "[runner] building command plan")
     commands = build_commands(cfg, duration, artifact_dir, overrides.get("workload"))

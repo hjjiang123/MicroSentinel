@@ -1,7 +1,7 @@
 suite: flow_accuracy
-run_s: 180
+run_s: 1800
 warmup_s: 20
-repetitions: 5
+repetitions: 1
 modes: [microsentinel]
 overrides:
   annotations:

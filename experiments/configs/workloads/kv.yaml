@@ -16,7 +16,7 @@ server:
     refill_rate: 2000
 clients:
   generator: "python3 experiments/workloads/kv/kv_client.py"
-  instances: 8
+  instances: 2
   connections_per_instance: 128
   remote:
     host: "211.65.193.243"

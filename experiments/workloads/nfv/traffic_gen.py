@@ -76,6 +76,7 @@ def parse_int_list(value: str):
 
 async def main():
     args = parse_args()
+    print("Starting traffic generator with args:", args)
     args.rates = parse_int_list(args.rates)
     args.packet_sizes = parse_int_list(args.packet_sizes)
     args.dst_ports = parse_int_list(args.dst_ports)

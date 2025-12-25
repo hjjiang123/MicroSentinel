@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <chrono>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <netdb.h>
@@ -36,6 +37,49 @@ std::string JsonEscape(const std::string &value) {
         }
     }
     return out;
+}
+
+std::string FormatWallClockNowDateTime64NsUtc() {
+    using namespace std::chrono;
+    const auto now = system_clock::now();
+    const auto ns_since_epoch = duration_cast<nanoseconds>(now.time_since_epoch());
+    const auto sec_since_epoch = duration_cast<seconds>(ns_since_epoch);
+    const auto nsec = (ns_since_epoch - sec_since_epoch).count();
+
+    std::time_t tt = static_cast<std::time_t>(sec_since_epoch.count());
+    std::tm tm{};
+    gmtime_r(&tt, &tm);
+
+    std::ostringstream out;
+    out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.'
+        << std::setw(9) << std::setfill('0') << nsec;
+    return out.str();
+}
+
+uint64_t NowSteadyNs() {
+    using namespace std::chrono;
+    const auto now = steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(duration_cast<nanoseconds>(now).count());
+}
+
+uint64_t NowUnixNs() {
+    using namespace std::chrono;
+    const auto now = system_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(duration_cast<nanoseconds>(now).count());
+}
+
+std::string FormatUnixNsDateTime64NsUtc(uint64_t unix_ns) {
+    const uint64_t sec_since_epoch = unix_ns / 1'000'000'000ULL;
+    const uint64_t nsec = unix_ns % 1'000'000'000ULL;
+
+    std::time_t tt = static_cast<std::time_t>(sec_since_epoch);
+    std::tm tm{};
+    gmtime_r(&tt, &tm);
+
+    std::ostringstream out;
+    out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.'
+        << std::setw(9) << std::setfill('0') << nsec;
+    return out.str();
 }
 
 } // namespace
@@ -234,14 +278,26 @@ void ClickHouseSink::FlushBatch() {
         raw_pending.swap(raw_batch_);
         data_pending.swap(data_batch_);
     }
+
+    // Map the agent's monotonic timestamp domain (steady_clock) into real wall-clock
+    // time (system_clock). TscCalibrator normalizes sample.tsc to steady_clock ns.
+    const uint64_t now_mono_ns = NowSteadyNs();
+    const uint64_t now_unix_ns = NowUnixNs();
+    const int64_t mono_to_unix_offset_ns = static_cast<int64_t>(now_unix_ns) - static_cast<int64_t>(now_mono_ns);
+
     if (!pending.empty()) {
+        const std::string ingest_ts = FormatWallClockNowDateTime64NsUtc();
         std::ostringstream payload;
         payload << "INSERT INTO " << cfg_.table << " FORMAT JSONEachRow\n";
         for (const auto &kv : pending) {
             uint64_t bucket_start_ns = kv.first.bucket * bucket_width_ns_;
+            const int64_t window_unix_ns_i = static_cast<int64_t>(bucket_start_ns) + mono_to_unix_offset_ns;
+            const uint64_t window_unix_ns = window_unix_ns_i > 0 ? static_cast<uint64_t>(window_unix_ns_i) : 0ULL;
+            const std::string window_start_ts = FormatUnixNsDateTime64NsUtc(window_unix_ns);
             // double window_start = static_cast<double>(bucket_start_ns) / 1'000'000'000.0;
             payload << '{'
-                    << "\"window_start\":" << bucket_start_ns << ','
+                    << "\"window_start\":\"" << JsonEscape(window_start_ts) << "\"," 
+                    << "\"ingest_ts\":\"" << JsonEscape(ingest_ts) << "\"," 
                     << "\"host\":\"" << JsonEscape(agent_hostname_) << "\"," 
                     << "\"flow_id\":" << kv.first.flow_id << ','
                     << "\"function_id\":" << kv.first.function_hash << ','
@@ -296,6 +352,7 @@ void ClickHouseSink::FlushBatch() {
     }
 
     if (!raw_pending.empty()) {
+        const std::string ingest_ts = FormatWallClockNowDateTime64NsUtc();
         std::ostringstream payload;
         payload << "INSERT INTO " << cfg_.raw_table << " FORMAT JSONEachRow\n";
         for (const auto &entry : raw_pending) {
@@ -303,8 +360,13 @@ void ClickHouseSink::FlushBatch() {
             const LbrStack &stack = entry.stack;
             // printf("Sample TSC: %llu\n", s.tsc);
             // double ts = static_cast<double>(s.tsc) / 1'000'000'000.0;
+
+            const int64_t ts_unix_ns_i = static_cast<int64_t>(s.tsc) + mono_to_unix_offset_ns;
+            const uint64_t ts_unix_ns = ts_unix_ns_i > 0 ? static_cast<uint64_t>(ts_unix_ns_i) : 0ULL;
+            const std::string ts_wall = FormatUnixNsDateTime64NsUtc(ts_unix_ns);
             payload << '{'
-                    << "\"ts\":" << s.tsc << ','
+                    << "\"ts\":\"" << JsonEscape(ts_wall) << "\"," 
+                    << "\"ingest_ts\":\"" << JsonEscape(ingest_ts) << "\"," 
                     << "\"host\":\"" << JsonEscape(agent_hostname_) << "\"," 
                     << "\"cpu\":" << s.cpu << ','
                     << "\"pid\":" << s.pid << ','
