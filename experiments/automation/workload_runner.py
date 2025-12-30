@@ -991,54 +991,6 @@ def build_lb_commands(
         cmd = _split_cmd(lb.get("binary", "haproxy")) + ["-f", str(cfg_path), "-db"]
     elif impl == "external":
         cmd = _split_cmd(lb["command"])
-    elif impl == "hot_native":
-        # Build and run the native C++ LB hot server used by §5.2 flow attribution accuracy.
-        # We compile into the artifact dir for reproducibility.
-        out_dir = artifact_dir / "bin"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_bin = out_dir / "lb_hot_server"
-        src = Path("experiments/workloads/lb/lb_hot_server.cpp")
-        build_cmd = [
-            "g++",
-            "-O2",
-            "-g",
-            "-std=c++20",
-            "-pthread",
-            str(src),
-            "-o",
-            str(out_bin),
-        ]
-        specs.append(CommandSpec("lb-hot-build", build_cmd, "lb_hot_build.log", ready_wait=0.1, role="build"))
-
-        cmd = [
-            str(out_bin),
-            "--host",
-            lb.get("bind_address", "0.0.0.0"),
-            "--port",
-            str(lb.get("port", 7100)),
-            "--workers",
-            str(lb.get("workers", 8)),
-        ]
-
-        # Strict hot_func_i mapping parameters.
-        hot_funcs = lb.get("hot_funcs")
-        hot_bytes = lb.get("hot_bytes_per_func")
-        hot_stride = lb.get("hot_stride")
-        hot_rounds = lb.get("hot_rounds")
-        payload_bytes = lb.get("payload_bytes")
-        flow_tag_bytes = lb.get("flow_tag_bytes")
-        if payload_bytes is not None:
-            cmd += ["--payload-bytes", str(payload_bytes)]
-        if flow_tag_bytes is not None:
-            cmd += ["--flow-tag-bytes", str(flow_tag_bytes)]
-        if hot_funcs is not None:
-            cmd += ["--hot-funcs", str(hot_funcs)]
-        if hot_bytes is not None:
-            cmd += ["--hot-bytes-per-func", str(hot_bytes)]
-        if hot_stride is not None:
-            cmd += ["--hot-stride", str(hot_stride)]
-        if hot_rounds is not None:
-            cmd += ["--hot-rounds", str(hot_rounds)]
     else:
         cmd = _split_cmd(lb["binary"]) + [
             "--host",
@@ -1102,16 +1054,6 @@ def build_lb_commands(
         extra_artifacts.append((truth_path, truth_remote_path))
     else:
         truth_arg = None
-
-    # If the client runs remotely, proactively remove any stale remote metrics/truth
-    # from previous runs. This prevents the fetch phase from copying leftover large
-    # files when the remote client fails early.
-    if remote:
-        remote_paths = [remote_metrics]
-        if truth_remote_path:
-            remote_paths.append(truth_remote_path)
-        clean_cmd = remote.wrap_command(["rm", "-f", *remote_paths])
-        specs.append(CommandSpec("lb-client-remote-clean", clean_cmd, "lb_client_remote_clean.log", ready_wait=0.1, role="build"))
     impl = client.get("implementation", "builtin")
     rate = client.get("rate")
     # If the client will be run on a remote host and we intend to pass --rate,
@@ -1163,13 +1105,6 @@ def build_lb_commands(
             "--metrics-file",
             metrics_arg,
         ]
-        # Optional strict flow tagging for function-level attribution.
-        flow_tag_bytes = client.get("flow_tag_bytes")
-        expected_prefix = client.get("expected_function_prefix")
-        if flow_tag_bytes is not None:
-            cmd += ["--flow-tag-bytes", str(flow_tag_bytes)]
-        if expected_prefix is not None:
-            cmd += ["--expected-function-prefix", str(expected_prefix)]
         # forward an optional per-workload total rate to the client generator
         if rate is not None:
             cmd += ["--rate", str(rate)]
@@ -1542,24 +1477,7 @@ def execute_workload(
             if mode == "microsentinel":
                 _configure_microsentinel_agent(agent_config, ms_runtime_overrides, artifact_dir)
 
-            # Build steps (e.g., compiling native workloads) must complete before
-            # we launch long-running workload processes.
-            build_specs = [spec for spec in commands if str(spec.role) == "build"]
-            run_specs = [spec for spec in commands if str(spec.role) != "build"]
-            for spec in build_specs:
-                log_path = artifact_dir / spec.log_suffix
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(log_path, "w", encoding="utf-8") as f:
-                    f.write(f"[launcher] running build step {spec.name}: {' '.join(spec.argv)}\n")
-                    f.flush()
-                    env = os.environ.copy()
-                    if spec.env:
-                        env.update(spec.env)
-                    cp = subprocess.run(spec.argv, stdout=f, stderr=subprocess.STDOUT, env=env, check=False)
-                    if cp.returncode != 0:
-                        raise ProcessLaunchError(f"{spec.name} failed with code {cp.returncode}")
-
-            for spec in run_specs:
+            for spec in commands:
                 log_path = artifact_dir / spec.log_suffix
                 proc = stack.enter_context(
                     managed_process(

@@ -19,13 +19,10 @@ workloads:
     overrides:
       lb_node:
         numa_policy: "numactl --cpunodebind=0 --membind=0"
-        # Use the native hot server so each flow maps to a distinct hot_func_i symbol.
-        implementation: hot_native
-        payload_bytes: 512
-        flow_tag_bytes: 4
-        hot_funcs: 64
-        hot_bytes_per_func: 4194304  # 4 MiB per hot_func_i
-        hot_stride: 64
+        # Enable synthetic cache-miss pressure inside the LB forwarding path so
+        # MEM_LOAD_RETIRED.L3_MISS produces sufficient samples per-flow.
+        hot_bytes_per_slot: 4194304  # 4 MiB
+        hot_slots: 64
         hot_rounds: 1
       clients:
         implementation: builtin
@@ -35,8 +32,6 @@ workloads:
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
         flows: 64
-        flow_tag_bytes: 4
-        expected_function_prefix: "hot_func_"
         ground_truth_log: metrics/flow_truth.json
   - name: kv
     config: experiments/configs/workloads/kv.yaml
