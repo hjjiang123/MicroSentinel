@@ -1,6 +1,7 @@
 #include "micro_sentinel/bpf_orchestrator.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -127,6 +128,16 @@ bool BpfOrchestrator::Init() {
 #endif
 }
 
+bool BpfOrchestrator::ConfigureInterfaceFilter(const std::vector<std::string> &ifaces) {
+#ifdef MS_WITH_LIBBPF
+    std::lock_guard<std::mutex> lk(mu_);
+    return ConfigureInterfaceFilterLocked(ifaces);
+#else
+    (void)ifaces;
+    return false;
+#endif
+}
+
 #ifdef MS_WITH_LIBBPF
 
 static int PerfEventOpen(perf_event_attr *attr, int pid, int cpu, int group_fd, unsigned long flags) {
@@ -168,6 +179,10 @@ bool BpfOrchestrator::LoadBpfObject() {
     tb_ctrl_map_ = bpf_object__find_map_by_name(obj_, "ms_tb_ctrl_map");
     active_evt_map_ = bpf_object__find_map_by_name(obj_, "ms_active_event");
 
+    // Optional: interface allowlist (used to restrict ctx capture).
+    if_filter_ctrl_map_ = bpf_object__find_map_by_name(obj_, "ms_if_filter_ctrl");
+    if_filter_map_ = bpf_object__find_map_by_name(obj_, "ms_if_filter_map");
+
     if (!ctx_prog_ || /*!ctx_tx_prog_ ||*/ !pmu_prog_ || !events_map_ || !tb_cfg_map_ || !tb_ctrl_map_ || !active_evt_map_) {
         std::cerr << "Missing symbols in BPF object" << std::endl;
         std::cerr << "ctx_prog_: " << (ctx_prog_ ? "found" : "missing") << std::endl;
@@ -185,11 +200,61 @@ bool BpfOrchestrator::LoadBpfObject() {
     tb_cfg_map_fd_ = bpf_map__fd(tb_cfg_map_);
     tb_ctrl_map_fd_ = bpf_map__fd(tb_ctrl_map_);
     active_evt_fd_ = bpf_map__fd(active_evt_map_);
+
+    if_filter_ctrl_fd_ = if_filter_ctrl_map_ ? bpf_map__fd(if_filter_ctrl_map_) : -1;
+    if_filter_fd_ = if_filter_map_ ? bpf_map__fd(if_filter_map_) : -1;
     if (cookie_map_fd_ < 0){
         cookie_supported_ = false;
         std::cout<< "MicroSentinel running in legacy PMU mode; upgrade libbpf for per-event attribution" <<std::endl;
     }
     return events_map_fd_ >= 0 && tb_cfg_map_fd_ >= 0 && tb_ctrl_map_fd_ >= 0 && active_evt_fd_ >= 0;
+}
+
+bool BpfOrchestrator::ConfigureInterfaceFilterLocked(const std::vector<std::string> &ifaces) {
+    // If maps aren't present (older BPF object), treat as non-fatal.
+    if (if_filter_ctrl_fd_ < 0 || if_filter_fd_ < 0)
+        return true;
+
+    // ctrl: 0 => allow all, 1 => allowlist
+    __u32 ctrl_key = 0;
+    __u32 mode = ifaces.empty() ? 0U : 1U;
+    if (bpf_map_update_elem(if_filter_ctrl_fd_, &ctrl_key, &mode, BPF_ANY) < 0) {
+        std::perror("bpf_map_update_elem(ms_if_filter_ctrl)");
+        return false;
+    }
+
+    if (ifaces.empty()) {
+        std::cout << "[BpfOrchestrator] Interface filter disabled (allow all interfaces)" << std::endl;
+        return true;
+    }
+
+    std::cout << "[BpfOrchestrator] Restricting ctx capture to interfaces: ";
+    bool first = true;
+    for (const auto &iface : ifaces) {
+        if (!first)
+            std::cout << ",";
+        std::cout << iface;
+        first = false;
+    }
+    std::cout << std::endl;
+
+    for (const auto &iface : ifaces) {
+        if (iface.empty())
+            continue;
+        unsigned int ifindex = if_nametoindex(iface.c_str());
+        if (ifindex == 0) {
+            std::cerr << "[BpfOrchestrator] Unknown interface in anomaly_interfaces: " << iface << std::endl;
+            continue;
+        }
+        __u32 key = static_cast<__u32>(ifindex);
+        __u8 val = 1;
+        if (bpf_map_update_elem(if_filter_fd_, &key, &val, BPF_ANY) < 0) {
+            std::perror("bpf_map_update_elem(ms_if_filter_map)");
+            std::cerr << "[BpfOrchestrator] Failed to add ifindex " << ifindex << " for " << iface << std::endl;
+            return false;
+        }
+    }
+    return true;
 }
 
 bool BpfOrchestrator::AttachNetPrograms() {

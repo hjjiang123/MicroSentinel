@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <vector>
 
 #include "micro_sentinel/scope_logger.h"
 #include "micro_sentinel/bucket_update.h"
@@ -116,6 +117,14 @@ AgentRuntime::AgentRuntime(AgentConfig cfg)
                 metrics_->SetGauge("ms_pmu_scale", scale);
         });
 #endif
+
+        // Restrict ctx capture to configured interfaces (anomaly_interfaces).
+        // When anomaly is disabled, always allow all interfaces.
+        if (!bpf_->ConfigureInterfaceFilter(cfg_.anomaly.enabled ? cfg_.anomaly.interfaces
+                                                                 : std::vector<std::string>{})) {
+            std::cerr << "[Runtime] Failed to configure interface filter" << std::endl;
+        }
+
         bpf_->SyncBudgetConfig(bucket_state_.sentinel_budget,
                                bucket_state_.diagnostic_budget,
                                bucket_state_.hard_drop_ns);

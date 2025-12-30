@@ -23,6 +23,7 @@ private:
         uint64_t last_raw{0};
         uint64_t last_ref{0};
         bool initialized{false};
+        bool passthrough_steady_ns{false};
     };
 
     static uint64_t NowNs();

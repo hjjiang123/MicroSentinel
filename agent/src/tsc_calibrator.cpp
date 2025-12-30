@@ -37,6 +37,20 @@ uint64_t TscCalibrator::Normalize(uint32_t cpu, uint64_t raw_tsc) {
 
     if (!model.initialized) {
         model.initialized = true;
+
+        // Heuristic: if the incoming timestamp is already in the same steady-clock
+        // nanoseconds domain as ref_ns (e.g., produced by bpf_ktime_get_ns()),
+        // bypass calibration entirely.
+        if (ref_ns > 0 && raw_tsc > 0) {
+            const double ratio = static_cast<double>(raw_tsc) / static_cast<double>(ref_ns);
+            if (ratio > 0.75 && ratio < 1.5) {
+                model.passthrough_steady_ns = true;
+                model.last_raw = raw_tsc;
+                model.last_ref = ref_ns;
+                return raw_tsc;
+            }
+        }
+
         model.slope = 1.0;
         model.offset = static_cast<double>(ref_ns) - static_cast<double>(raw_tsc);
         model.last_raw = raw_tsc;
@@ -44,11 +58,16 @@ uint64_t TscCalibrator::Normalize(uint32_t cpu, uint64_t raw_tsc) {
         return ref_ns;
     }
 
+    if (model.passthrough_steady_ns)
+        return raw_tsc;
+
     uint64_t raw_delta = raw_tsc >= model.last_raw ? (raw_tsc - model.last_raw) : 0;
     uint64_t ref_delta = ref_ns - model.last_ref;
     if (raw_delta > 0 && ref_delta > 0) {
         double slope_est = static_cast<double>(ref_delta) / static_cast<double>(raw_delta);
-        model.slope = slope_alpha * slope_est + (1.0 - slope_alpha) * model.slope;
+        // Guard against backlog/outliers that can make slope_est explode.
+        if (slope_est > 0.0 && slope_est < 10.0)
+            model.slope = slope_alpha * slope_est + (1.0 - slope_alpha) * model.slope;
     }
 
     double offset_est = static_cast<double>(ref_ns) - model.slope * static_cast<double>(raw_tsc);

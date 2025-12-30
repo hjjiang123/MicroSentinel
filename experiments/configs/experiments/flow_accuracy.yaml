@@ -1,6 +1,6 @@
 suite: flow_accuracy
-run_s: 1800
-warmup_s: 20
+run_s: 180
+# warmup_s: 20
 repetitions: 1
 modes: [microsentinel]
 overrides:
@@ -13,16 +13,20 @@ workloads:
       scenario: flow_ground_truth
     parameters:
       delta_values_us: [5, 10, 20, 50]
-      client_variants:
-        - name: tenant-a
-          flows: 64
-        - name: tenant-b
-          flows: 64
-      filters:
-        - '{"type":"flow","value":"10.10."}'
+      pmu_events:
+        - ["MEM_LOAD_RETIRED.L3_MISS"]
+      # delta_values_us: [50]
     overrides:
       lb_node:
         numa_policy: "numactl --cpunodebind=0 --membind=0"
+        # Use the native hot server so each flow maps to a distinct hot_func_i symbol.
+        implementation: hot_native
+        payload_bytes: 512
+        flow_tag_bytes: 4
+        hot_funcs: 64
+        hot_bytes_per_func: 4194304  # 4 MiB per hot_func_i
+        hot_stride: 64
+        hot_rounds: 1
       clients:
         implementation: builtin
         remote:
@@ -30,7 +34,9 @@ workloads:
           workdir: "/home/hjjiang/MicroSentinel"
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
-        flows: 128
+        flows: 64
+        flow_tag_bytes: 4
+        expected_function_prefix: "hot_func_"
         ground_truth_log: metrics/flow_truth.json
   - name: kv
     config: experiments/configs/workloads/kv.yaml

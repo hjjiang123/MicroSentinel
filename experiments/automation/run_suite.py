@@ -8,6 +8,7 @@ import contextlib
 import json
 import subprocess
 import sys
+from time import sleep
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -274,10 +275,12 @@ def run_suite(args):
                     overrides=overrides,
                     artifact_root=str(suite_run_dir),
                 )
+
+            # sleep(60)
             if artifact:
                 artifacts.append(artifact)
             
-            print(f"  [run_suite] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] completed run for suite={args.suite}, mode={suite_run.mode}")
+            print(f"  [run_suite completed] [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] completed run for suite={args.suite}, mode={suite_run.mode}")
     summary_payload = {
         "suite": args.suite,
         "generated_at": datetime.now().isoformat(),

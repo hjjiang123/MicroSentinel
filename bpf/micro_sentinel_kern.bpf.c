@@ -34,6 +34,18 @@
 #ifndef IPPROTO_UDP
 #define IPPROTO_UDP 17
 #endif
+#ifndef IPPROTO_HOPOPTS
+#define IPPROTO_HOPOPTS 0
+#endif
+#ifndef IPPROTO_ROUTING
+#define IPPROTO_ROUTING 43
+#endif
+#ifndef IPPROTO_FRAGMENT
+#define IPPROTO_FRAGMENT 44
+#endif
+#ifndef IPPROTO_DSTOPTS
+#define IPPROTO_DSTOPTS 60
+#endif
 
 char _license[] SEC("license") = "Dual BSD/GPL";
 
@@ -104,6 +116,34 @@ struct {
     __type(value, __u32);
 } ms_active_event SEC(".maps");
 
+// Interface filter (optional):
+// ms_if_filter_ctrl[0] = 0 => allow all (default)
+// ms_if_filter_ctrl[0] = 1 => allow only ifindex present in ms_if_filter_map
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} ms_if_filter_ctrl SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, __u32);   // ifindex
+    __type(value, __u8);  // 1
+} ms_if_filter_map SEC(".maps");
+
+struct ms_lbr_tmp {
+    struct perf_branch_entry entries[MS_LBR_MAX];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct ms_lbr_tmp);
+} ms_lbr_tmp_map SEC(".maps");
+
 /* -------------------------------------------------------------------------- */
 /*                         Helper / Utility Functions                         */
 /* -------------------------------------------------------------------------- */
@@ -128,7 +168,7 @@ static __always_inline __u64 get_hard_drop_ns(void)
 
 static __always_inline bool allow_sample(__u64 now)
 {
-    bpf_printk("allow_sample: enter now=%llu\n", now);
+    // bpf_printk("allow_sample: enter now=%llu\n", now);
     bool allowed = false;
     __u64 remaining = 0;
     __u32 key = 0;
@@ -238,6 +278,10 @@ static __always_inline __u64 hash_flow_tuple(const struct ms_flow_tuple *tuple)
     }
     if (h == 0)
         h = fallback_flow_id();
+    bpf_printk("src_addr=%x dst_addr=%x sport=%u dport=%u proto=%u dir=%u hash=%llu\n",
+               tuple->saddr_v4, tuple->daddr_v4,
+               tuple->sport, tuple->dport,
+               tuple->proto, tuple->dir, h);
     return h;
 }
 
@@ -252,6 +296,52 @@ static __always_inline bool load_header(const void *base, __u32 offset, void *ds
         return true;
     const void *addr = (const void *)((const __u8 *)base + offset);
     return bpf_probe_read_kernel(dst, len, addr);
+}
+
+struct ms_ipv6_opt_hdr {
+    __u8 nexthdr;
+    __u8 hdrlen;
+};
+
+struct ms_ipv6_frag_hdr {
+    __u8 nexthdr;
+    __u8 reserved;
+    __be16 frag_off;
+    __be32 identification;
+};
+
+static __always_inline int compute_ipv6_l4_off(const void *head, __u16 l3_off, struct ipv6hdr *ip6h, __u16 *l4_off, __u8 *l4_proto)
+{
+    if (!head || !l3_off || !ip6h || !l4_off || !l4_proto)
+        return -1;
+
+    __u16 off = l3_off + sizeof(struct ipv6hdr);
+    __u8 nexthdr = ip6h->nexthdr;
+
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (nexthdr == IPPROTO_HOPOPTS || nexthdr == IPPROTO_ROUTING || nexthdr == IPPROTO_DSTOPTS) {
+            struct ms_ipv6_opt_hdr oh = {};
+            if (load_header(head, off, &oh, sizeof(oh)))
+                return -1;
+            nexthdr = oh.nexthdr;
+            off += (__u16)(oh.hdrlen + 1) * 8;
+            continue;
+        }
+        if (nexthdr == IPPROTO_FRAGMENT) {
+            struct ms_ipv6_frag_hdr fh = {};
+            if (load_header(head, off, &fh, sizeof(fh)))
+                return -1;
+            nexthdr = fh.nexthdr;
+            off += 8;
+            continue;
+        }
+        break;
+    }
+
+    *l4_off = off;
+    *l4_proto = nexthdr;
+    return 0;
 }
 
 static __always_inline int parse_ipv4_tuple(struct sk_buff *skb, bool inner, struct ms_flow_tuple *tuple)
@@ -282,10 +372,16 @@ static __always_inline int parse_ipv4_tuple(struct sk_buff *skb, bool inner, str
     tuple->saddr_v4 = iph.saddr;
     tuple->daddr_v4 = iph.daddr;
 
-    if (!l4_off)
-        return 0;
+    // At tp_btf/netif_receive_skb, skb->transport_header is often unset.
+    // Fall back to computing the L4 offset from the IPv4 IHL.
+    if (!l4_off && (tuple->proto == IPPROTO_TCP || tuple->proto == IPPROTO_UDP)) {
+        __u32 ihl = iph.ihl;
+        if (ihl < 5)
+            return -1;
+        l4_off = l3_off + (__u16)(ihl * 4);
+    }
 
-    if (tuple->proto == IPPROTO_TCP || tuple->proto == IPPROTO_UDP) {
+    if (l4_off && (tuple->proto == IPPROTO_TCP || tuple->proto == IPPROTO_UDP)) {
         __be16 ports[2] = {};
         if (load_header(head, l4_off, &ports, sizeof(ports)))
             return -1;
@@ -326,9 +422,18 @@ static __always_inline int parse_ipv6_tuple(struct sk_buff *skb, bool inner, str
         tuple->v6.dst[i] = ip6h.daddr.in6_u.u6_addr32[i];
     }
 
-    if (!l4_off)
-        return 0;
-    if (tuple->proto == IPPROTO_TCP || tuple->proto == IPPROTO_UDP) {
+    // Similar to IPv4: transport_header may be unset at netif_receive_skb.
+    // Also attempt to skip a small number of IPv6 extension headers.
+    if (!l4_off) {
+        __u8 l4_proto = 0;
+        __u16 computed = 0;
+        if (compute_ipv6_l4_off(head, l3_off, &ip6h, &computed, &l4_proto) == 0) {
+            l4_off = computed;
+            tuple->proto = l4_proto;
+        }
+    }
+
+    if (l4_off && (tuple->proto == IPPROTO_TCP || tuple->proto == IPPROTO_UDP)) {
         __be16 ports[2] = {};
         if (load_header(head, l4_off, &ports, sizeof(ports)))
             return -1;
@@ -338,15 +443,55 @@ static __always_inline int parse_ipv6_tuple(struct sk_buff *skb, bool inner, str
     return 0;
 }
 
+/*
+ * calc_flow_hash - 计算并返回数据包的流（flow）哈希值
+ *
+ * 描述：
+ *   这是一个在 eBPF 环境下的内联辅助函数，用于基于 skb（struct sk_buff）内容
+ *   生成一个 64 位的流标识/哈希值。函数首先安全地读取 skb 的协议字段和内层
+ *   网络头偏移（inner_network_header）以判断是否为封装包（encap）。然后填充
+ *   一个 ms_flow_tuple 结构并尝试解析 IP 四元组（源/目的地址与端口）来计算哈希。
+ *
+ * 行为与步骤：
+ *   1. 使用 bpf_core_read 读取 skb->protocol 与 skb->inner_network_header。
+ *   2. 根据 inner_network_header 是否非零确定是否“封装”包（encap）。
+ *   3. 初始化 ms_flow_tuple 并设置方向字段（tuple.dir = direction）。
+ *   4. 若检测到封装（encap），再次读取 inner_network_header 并在有内层网络头时：
+ *        - 若外层/捕获的协议为 IPv4，调用 parse_ipv4_tuple(skb, true, &tuple) 解析内层四元组；
+ *        - 若为 IPv6，调用 parse_ipv6_tuple(skb, true, &tuple) 解析内层四元组；
+ *        - 若解析成功（返回 0），跳转到 hash_tuple 生成哈希。
+ *   5. 若非封装或内层解析未成功，按照外层协议继续：
+ *        - IPv4：调用 parse_ipv4_tuple(skb, false, &tuple) 解析外层；若失败返回 fallback_flow_id()；
+ *        - IPv6：调用 parse_ipv6_tuple(skb, false, &tuple) 解析外层；若失败返回 fallback_flow_id()；
+ *        - 其他协议：读取 skb->hash 并打印调试信息（bpf_printk 包含 src/dst/proto/encap/hash），
+ *          若 skb->hash 非零则返回该值，否则返回 fallback_flow_id()。
+ *   6. hash_tuple 标签：当 tuple 被成功填充时，调用 hash_flow_tuple(&tuple) 并返回其结果。
+ *
+ * 参数：
+ *   - struct sk_buff *skb: 指向要计算哈希的数据包缓冲区（SKB）。
+ *   - __u8 direction: 表示方向的标志，存储到 tuple.dir 中影响最终哈希/流标识。
+ *
+ * 返回值：
+ *   - 返回 __u64 类型的流哈希/标识；可能来自解析出的五元组（通过 hash_flow_tuple），
+ *     或来自 skb->hash（若非 IP 包且该字段非零），或 fallback_flow_id()（解析失败或无 hash 时）。
+ *
+ * 注意事项/副作用：
+ *   - 使用 bpf_core_read 进行内核内存安全读取，适用于 CO-RE（Compile Once — Run Everywhere）。
+ *   - 使用 __bpf_constant_htons 比较协议常量（ETH_P_IP/ETH_P_IPV6）。
+ *   - 当遇到未知协议分支时会调用 bpf_printk 打印调试信息，可能对性能/日志有影响。
+ *   - 该函数依赖 parse_ipv4_tuple、parse_ipv6_tuple、hash_flow_tuple 和 fallback_flow_id 的语义：
+ *       * parse_* 返回 0 表示成功并填充 tuple；返回负数表示失败。
+ *       * hash_flow_tuple 基于 tuple 生成最终哈希值。
+ *       * fallback_flow_id 提供解析失败或无哈希时的后备值。
+ *   - 被声明为 __always_inline，返回类型为 __u64，适合在 BPF 程序内联使用以减少栈/调用开销。
+ */
 static __always_inline __u64 calc_flow_hash(struct sk_buff *skb, __u8 direction)
 {
     __u16 protocol = 0;
     bpf_core_read(&protocol, sizeof(protocol), &skb->protocol);
-    bool encap = false;
-#if defined(BPF_CORE_READ_BITFIELD_PROBED)
-    if (bpf_core_field_exists(skb->encapsulation))
-        encap = BPF_CORE_READ_BITFIELD_PROBED(skb, encapsulation);
-#endif
+    __u16 inner_nh = 0;
+    bpf_core_read(&inner_nh, sizeof(inner_nh), &skb->inner_network_header);
+    bool encap = inner_nh != 0;
 
     struct ms_flow_tuple tuple = {};
     tuple.dir = direction;
@@ -374,6 +519,9 @@ static __always_inline __u64 calc_flow_hash(struct sk_buff *skb, __u8 direction)
     } else {
         __u32 hash = 0;
         bpf_core_read(&hash, sizeof(hash), &skb->hash);
+        // bpf_printk("src_ip=%x dst_ip=%x protocol=0x%x encap=%u hash=%u\n",
+        //            tuple.saddr_v4, tuple.daddr_v4,
+        //            protocol, encap, hash);
         return hash ? hash : fallback_flow_id();
     }
 
@@ -573,6 +721,7 @@ static __always_inline __u64 find_flow_in_history(__u64 ts_begin, __u64 ts_end)
 static __always_inline __u64 ms_get_attach_cookie(const void *ctx)
 {
 #if defined(BPF_FUNC_get_attach_cookie)
+    // bpf_printk("ms_get_attach_cookie: using bpf_get_attach_cookie\n");
     return bpf_get_attach_cookie(ctx);
 #else
     return 0;
@@ -581,11 +730,13 @@ static __always_inline __u64 ms_get_attach_cookie(const void *ctx)
 
 static __always_inline int ms_get_branch_snapshot(void *entries, __u32 size, __u64 flags)
 {
-#if defined(BPF_FUNC_get_branch_snapshot)
+//     bpf_printk("ms_get_branch_snapshot: enter size=%u flags=%llu\n", size, flags);
+// #if defined(BPF_FUNC_get_branch_snapshot)
+    // bpf_printk("ms_get_branch_snapshot: using bpf_get_branch_snapshot\n");
     return bpf_get_branch_snapshot(entries, size, flags);
-#else
-    return -1;
-#endif
+// #else
+    // return -1;
+// #endif
 }
 
 static __always_inline __u32 map_hw_event(const struct bpf_perf_event_data *ctx)
@@ -610,6 +761,11 @@ static __always_inline __u32 map_hw_event(const struct bpf_perf_event_data *ctx)
 static __always_inline void capture_flow_ctx(struct sk_buff *skb, __u8 direction)
 {
     // bpf_printk("capture_flow_ctx: enter dir=%u\n", direction);
+    
+    
+    __u64 flow_id = calc_flow_hash(skb, direction);
+
+
     __u32 key = 0;
     struct ms_flow_ctx *ctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
     if (!ctx) {
@@ -617,10 +773,20 @@ static __always_inline void capture_flow_ctx(struct sk_buff *skb, __u8 direction
         return;
     }
 
-    __u64 now = bpf_ktime_get_ns();
-    __u64 flow_id = calc_flow_hash(skb, direction);
-    __u32 gso_segs = calc_gso_segs(skb);
+    // Optional per-interface allowlist. If enabled and not allowed, no-op.
+    __u32 ctrl_key = 0;
+    __u32 *mode = bpf_map_lookup_elem(&ms_if_filter_ctrl, &ctrl_key);
     __u16 ifindex = calc_ifindex(skb);
+    if (mode && *mode == 1) {
+        __u32 ifk = (__u32)ifindex;
+        __u8 *allowed = bpf_map_lookup_elem(&ms_if_filter_map, &ifk);
+        if (!allowed)
+            return;
+    }
+
+    __u64 now = bpf_ktime_get_ns();
+    // __u64 flow_id = calc_flow_hash(skb, direction);
+    __u32 gso_segs = calc_gso_segs(skb);
     __u8 proto = extract_l4_proto(skb);
 
     ctx->tsc = now;
@@ -632,12 +798,12 @@ static __always_inline void capture_flow_ctx(struct sk_buff *skb, __u8 direction
 
     ms_hist_push(now, flow_id);
     // bpf_printk("capture_flow_ctx: exit dir=%u flow=%llu ifindex=%u gso=%u\n",
-            //    direction, flow_id, ifindex, gso_segs);
+    //            direction, flow_id, ifindex, gso_segs);
 }
 
 static __always_inline void capture_flow_ctx_xdp(struct xdp_md *xdp)
 {
-    bpf_printk("capture_flow_ctx_xdp: enter ifindex=%u\n", xdp->ingress_ifindex);
+    // bpf_printk("capture_flow_ctx_xdp: enter ifindex=%u\n", xdp->ingress_ifindex);
     __u32 key = 0;
     struct ms_flow_ctx *ctx = bpf_map_lookup_elem(&ms_curr_ctx, &key);
     if (!ctx) {
@@ -656,12 +822,78 @@ static __always_inline void capture_flow_ctx_xdp(struct xdp_md *xdp)
     ctx->direction = 0;
 
     ms_hist_push(now, flow_id);
-    bpf_printk("capture_flow_ctx_xdp: exit flow=%llu ifindex=%u\n", flow_id, xdp->ingress_ifindex);
+    // bpf_printk("capture_flow_ctx_xdp: exit flow=%llu ifindex=%u\n", flow_id, xdp->ingress_ifindex);
 }
 
 SEC("tp_btf/netif_receive_skb")
 int BPF_PROG(ms_ctx_inject, struct sk_buff *skb)
 {
+    // // 安全检查：确保 skb 非空且数据可读
+    // if (!skb)
+    //     return 0;
+
+    // // 读取 skb->head, data, len 等关键字段（使用 CO-RE 安全读取）
+    // unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+    // unsigned char *data = (unsigned char *)BPF_CORE_READ(skb, data);
+    // unsigned int len = BPF_CORE_READ(skb, len);
+
+    // // 计算数据起始偏移
+    // unsigned int mac_offset = data - head;
+    // if (mac_offset >= len || len < sizeof(struct ethhdr))
+    //     return 0;
+
+    // // 指向以太网帧开始
+    // struct ethhdr *eth = (struct ethhdr *)(head + mac_offset);
+    // if ((void *)eth + sizeof(*eth) > head + len)
+    //     return 0;
+
+    // // 只处理 IPv4
+    // if (eth->h_proto != bpf_htons(ETH_P_IP))
+    //     return 0;
+
+    // // IP 头位置：紧跟在 ethhdr 之后
+    // struct iphdr *ip = (struct iphdr *)(eth + 1);
+    // if ((void *)ip + sizeof(*ip) > head + len)
+    //     return 0;
+
+    // // 检查 IP 头长度和总长度
+    // __u8 ip_hdr_len = ip->ihl * 4;
+    // if (ip_hdr_len < sizeof(*ip) || ip_hdr_len > len)
+    //     return 0;
+
+    // // 只处理 TCP 和 UDP
+    // if (ip->protocol != IPPROTO_TCP && ip->protocol != IPPROTO_UDP)
+    //     return 0;
+
+    // // 提取传输层头部（TCP/UDP）
+    // struct tcphdr *tcp = (struct tcphdr *)((unsigned char *)ip + ip_hdr_len);
+    // struct udphdr *udp = (struct udphdr *)((unsigned char *)ip + ip_hdr_len);
+
+    // // 检查 TCP/UDP 头是否在 skb 范围内
+    // if (ip->protocol == IPPROTO_TCP) {
+    //     if ((void *)tcp + sizeof(*tcp) > head + len)
+    //         return 0;
+    // } else {
+    //     if ((void *)udp + sizeof(*udp) > head + len)
+    //         return 0;
+    // }
+
+    // // 提取五元组
+    // __u32 src_ip = ip->saddr;
+    // __u32 dst_ip = ip->daddr;
+    // __u16 src_port = 0, dst_port = 0;
+
+    // if (ip->protocol == IPPROTO_TCP) {
+    //     src_port = bpf_ntohs(tcp->source);
+    //     dst_port = bpf_ntohs(tcp->dest);
+    // } else {
+    //     src_port = bpf_ntohs(udp->source);
+    //     dst_port = bpf_ntohs(udp->dest);
+    // }
+
+    // // 格式化输出字符串
+    // bpf_printk("ms_ctx_inject: src_ip=%x dst_ip=%x src_port=%u dst_port=%u proto=%u\n",
+    //            src_ip, dst_ip, src_port, dst_port, ip->protocol);
     // bpf_printk("ms_ctx_inject: enter skb=%p\n", skb);
     capture_flow_ctx(skb, 0);
     // bpf_printk("ms_ctx_inject: exit\n");
@@ -678,9 +910,9 @@ int ms_ctx_inject_tx(struct sk_buff *skb)
 SEC("xdp")
 int ms_ctx_inject_xdp(struct xdp_md *ctx)
 {
-    bpf_printk("ms_ctx_inject_xdp: enter ingress_ifindex=%u\n", ctx->ingress_ifindex);
+    // bpf_printk("ms_ctx_inject_xdp: enter ingress_ifindex=%u\n", ctx->ingress_ifindex);
     capture_flow_ctx_xdp(ctx);
-    bpf_printk("ms_ctx_inject_xdp: exit\n");
+    // bpf_printk("ms_ctx_inject_xdp: exit\n");
     return XDP_PASS;
 }
 
@@ -691,7 +923,7 @@ int ms_ctx_inject_xdp(struct xdp_md *ctx)
 SEC("perf_event")
 int ms_pmu_handler(struct bpf_perf_event_data *ctx)
 {
-    bpf_printk("ms_pmu_handler: enter\n");
+    // bpf_printk("ms_pmu_handler: enter\n");
     bool sample_emitted = false;
     int rc = 0;
     __u64 flow_id = 0;
@@ -745,26 +977,47 @@ int ms_pmu_handler(struct bpf_perf_event_data *ctx)
     sample.ip = ip;
     sample.data_addr = data_addr;
     sample.flow_id = flow_id;
-    sample.gso_segs = gso;
+    sample.gso_segs = gso;                  
     sample.ingress_ifindex = ifindex;
     sample.numa_node = bpf_get_numa_node_id();
     sample.l4_proto = proto;
     sample.direction = fctx ? fctx->direction : 0;
     sample.lbr_nr = 0;
 
-    struct perf_branch_entry stack[MS_LBR_MAX] = {};
-    int lbr_nr = ms_get_branch_snapshot(&stack, sizeof(stack), 0);
-    if (lbr_nr > 0) {
-        if (lbr_nr > MS_LBR_MAX)
-            lbr_nr = MS_LBR_MAX;
-        sample.lbr_nr = lbr_nr;
-#pragma unroll
-        for (int i = 0; i < MS_LBR_MAX; i++) {
-            if (i >= lbr_nr)
-                break;
-            sample.lbr[i].from = stack[i].from;
-            sample.lbr[i].to = stack[i].to;
-            bpf_printk("ms_pmu_handler: LBR from=0x%llx to=0x%llx\n", stack[i].from, stack[i].to);
+    struct ms_lbr_tmp *lbr_tmp = bpf_map_lookup_elem(&ms_lbr_tmp_map, &key);
+    if (lbr_tmp) {
+        int lbr_nr = ms_get_branch_snapshot(lbr_tmp->entries, sizeof(lbr_tmp->entries), 0);
+        if (lbr_nr > 0) {
+            if (lbr_nr > MS_LBR_MAX)
+                lbr_nr = MS_LBR_MAX;
+            sample.lbr_nr = lbr_nr;
+
+#define MS_COPY_LBR(_i)                                                                 \
+    do {                                                                                \
+        if (lbr_nr > (_i)) {                                                            \
+            sample.lbr[_i].from = lbr_tmp->entries[_i].from;                            \
+            sample.lbr[_i].to = lbr_tmp->entries[_i].to;                                \
+        }                                                                               \
+    } while (0)
+
+            MS_COPY_LBR(0);
+            MS_COPY_LBR(1);
+            MS_COPY_LBR(2);
+            MS_COPY_LBR(3);
+            MS_COPY_LBR(4);
+            MS_COPY_LBR(5);
+            MS_COPY_LBR(6);
+            MS_COPY_LBR(7);
+            MS_COPY_LBR(8);
+            MS_COPY_LBR(9);
+            MS_COPY_LBR(10);
+            MS_COPY_LBR(11);
+            MS_COPY_LBR(12);
+            MS_COPY_LBR(13);
+            MS_COPY_LBR(14);
+            MS_COPY_LBR(15);
+
+#undef MS_COPY_LBR
         }
     }
     // bpf_printk("sizeof ms_sample=%u lbr_nr=%u\n", sizeof(sample), sample.lbr_nr);
@@ -774,10 +1027,10 @@ int ms_pmu_handler(struct bpf_perf_event_data *ctx)
     }
 
     sample_emitted = true;
-    bpf_printk("ms_pmu_handler: sample output success flow_id=%llu pid=%u tid=%u ip=0x%llx\n", flow_id, pid, tid, ip);
+    // bpf_printk("ms_pmu_handler: sample output success flow_id=%llu pid=%u tid=%u ip=0x%llx\n", flow_id, pid, tid, ip);
 
 out:
-    bpf_printk("ms_pmu_handler: exit emitted=%u flow_id=%llu\n", sample_emitted, flow_id);
+    // bpf_printk("ms_pmu_handler: exit emitted=%u flow_id=%llu\n", sample_emitted, flow_id);
     return rc;
 }
 

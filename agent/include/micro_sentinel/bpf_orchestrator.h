@@ -35,6 +35,11 @@ public:
     void SyncBudgetConfig(uint64_t sentinel_budget,
                           uint64_t diagnostic_budget,
                           uint64_t hard_drop_ns);
+
+    // Restrict flow-context capture to a set of interfaces.
+    // Note: the underlying tracepoint program is still globally attached; this
+    // config makes it a no-op for non-allowed interfaces.
+    bool ConfigureInterfaceFilter(const std::vector<std::string> &ifaces);
     const std::vector<int> &ActiveCpus() const;
     size_t ActiveGroupCount() const;
     size_t CurrentGroupIndex() const;
@@ -57,11 +62,15 @@ private:
     struct bpf_map *tb_cfg_map_{nullptr};
     struct bpf_map *tb_ctrl_map_{nullptr};
     struct bpf_map *active_evt_map_{nullptr};
+    struct bpf_map *if_filter_ctrl_map_{nullptr};
+    struct bpf_map *if_filter_map_{nullptr};
     int events_map_fd_{-1};
     int cookie_map_fd_{-1};
     int tb_cfg_map_fd_{-1};
     int tb_ctrl_map_fd_{-1};
     int active_evt_fd_{-1};
+    int if_filter_ctrl_fd_{-1};
+    int if_filter_fd_{-1};
 
     struct PerfAttach {
         int fd{-1};
@@ -86,6 +95,7 @@ private:
     bool AttachPerfGroupsLegacy(const std::vector<PmuGroupConfig> &groups);
     void DetachPerfGroupsLocked();
     bool ConfigureTokenBucket(uint64_t samples_per_sec, uint64_t hard_drop_ns);
+    bool ConfigureInterfaceFilterLocked(const std::vector<std::string> &ifaces);
     bool WriteCookie(__u64 cookie, ms_pmu_event_type evt);
     bool WriteActiveEvent(ms_pmu_event_type evt);
 #endif

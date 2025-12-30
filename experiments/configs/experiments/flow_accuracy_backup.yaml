@@ -1,0 +1,53 @@
+
+suite: flow_accuracy
+run_s: 180
+# warmup_s: 20
+repetitions: 1
+modes: [microsentinel]
+overrides:
+  annotations:
+    suite: flow_accuracy
+workloads:
+  - name: load_balancer
+    config: experiments/configs/workloads/load_balancer.yaml
+    annotations:
+      scenario: flow_ground_truth
+    parameters:
+      delta_values_us: [5, 10, 20, 50]
+      # delta_values_us: [50]
+    overrides:
+      lb_node:
+        numa_policy: "numactl --cpunodebind=0 --membind=0"
+      clients:
+        implementation: builtin
+        remote:
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
+        generator: python3 experiments/workloads/lb/lb_client.py
+        flows: 64
+        ground_truth_log: metrics/flow_truth.json
+  - name: kv
+    config: experiments/configs/workloads/kv.yaml
+    annotations:
+      scenario: data_object_mapping
+    parameters:
+      pmu_events:
+        - ["MEM_LOAD_RETIRED.L3_MISS"]
+      delta_values_us: [10]
+    overrides:
+      server:
+        implementation: builtin
+        binary: python3 experiments/workloads/kv/kv_server.py
+        dataset:
+          key_space: 65536
+          value_size_bytes: 512
+      clients:
+        implementation: builtin
+        remote:
+          host: "211.65.193.243"
+          workdir: "/home/hjjiang/MicroSentinel"
+          metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
+        generator: python3 experiments/workloads/kv/kv_client.py
+        connections_per_instance: 32
+        annotations_file: metrics/kv_truth.json

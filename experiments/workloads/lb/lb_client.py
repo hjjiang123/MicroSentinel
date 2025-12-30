@@ -7,8 +7,14 @@ import socket
 import struct
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+
+
+def _log(message: str) -> None:
+    ts = datetime.now().isoformat(timespec="seconds")
+    print(f"[{ts}] {message}", flush=True)
 
 
 def percentile(values: List[float], pct: float) -> float:
@@ -34,7 +40,7 @@ class FlowResult:
     operations: int
     latencies_us: List[float]
     errors: int
-    ground_truth: Optional[List[Tuple[int, int]]] = None
+    ground_truth: Optional[List[Tuple[int, int, int, int]]] = None
 
 
 MS_FNV64_OFFSET = 1469598103934665603
@@ -48,7 +54,7 @@ def _fnv64_mix(h: int, data: int) -> int:
 
 
 def _ipv4_be32(addr: str) -> int:
-    return struct.unpack("!I", socket.inet_aton(addr))[0]
+    return struct.unpack("I", socket.inet_aton(addr))[0]
 
 
 def compute_ms_flow_id_v4(src_ip: str, dst_ip: str, src_port: int, dst_port: int, proto: int = 6, direction: int = 0) -> int:
@@ -71,7 +77,8 @@ async def flow_task(
     duration: int,
     payload: bytes,
     flow_id: int,
-    truth_buffer: Optional[List[Tuple[int, int]]],
+    truth_buffer: Optional[List[Tuple[int, int, int, int]]],
+    expected_function: Optional[str] = None,
     per_flow_interval: float = 0.0,
 ) -> FlowResult:
     deadline = time.monotonic() + duration
@@ -93,6 +100,12 @@ async def flow_task(
         if isinstance(sockname, tuple) and isinstance(peername, tuple) and len(sockname) >= 2 and len(peername) >= 2:
             src_ip, src_port = sockname[0], int(sockname[1])
             dst_ip, dst_port = peername[0], int(peername[1])
+
+            # Print 4-tuple for each established connection. When this client is
+            # launched remotely via the experiment runner, stdout/stderr is
+            # captured in the server host's artifact logs via the SSH wrapper.
+            _log(f"[lb-client] connected flow_index={flow_id} src={src_ip}:{src_port} dst={dst_ip}:{dst_port}")
+
             if ":" not in src_ip and ":" not in dst_ip:
                 computed_flow_id = compute_ms_flow_id_v4(src_ip, dst_ip, src_port, dst_port, proto=6, direction=0)
                 tuple_info = {
@@ -103,6 +116,7 @@ async def flow_task(
                     "proto": 6,
                     "direction": 0,
                 }
+            
     except Exception:
         pass
 
@@ -139,6 +153,8 @@ async def flow_task(
     result = FlowResult(computed_flow_id, operations, latencies, errors, truth_buffer)
     # Attach tuple info out-of-band by stashing it on the instance (for JSON writer).
     setattr(result, "tuple_info", tuple_info)
+    setattr(result, "flow_tag", flow_id)
+    setattr(result, "expected_function", expected_function)
     return result
 
 
@@ -172,6 +188,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flows", type=int, default=128, help="Concurrent TCP flows")
     parser.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
     parser.add_argument("--payload", type=int, default=512, help="Bytes per request")
+    parser.add_argument(
+        "--flow-tag-bytes",
+        type=int,
+        default=0,
+        choices=[0, 2, 4],
+        help="If non-zero, write a per-flow tag (flow index) into the first N bytes of the payload (little-endian)",
+    )
+    parser.add_argument(
+        "--expected-function-prefix",
+        default="hot_func_",
+        help="When --flow-tag-bytes is enabled, record expected function as <prefix><flow_index> in ground truth",
+    )
     parser.add_argument("--rate", type=float, default=0.0, help="Total requests per second across all flows (0 = unlimited)")
     parser.add_argument("--metrics-file", help="Optional JSON file to write metrics to")
     parser.add_argument("--ground-truth-log", help="Optional JSON file with per-flow request windows")
@@ -184,56 +212,74 @@ def _write_ground_truth(path: str, results: Iterable[FlowResult]) -> None:
         if not res.ground_truth:
             continue
         tuple_info = getattr(res, "tuple_info", None)
+        flow_tag = getattr(res, "flow_tag", None)
+        expected_function = getattr(res, "expected_function", None)
         # Ground truth is primarily used for aligning against ClickHouse `DateTime64(9)`
         # timestamps. We record both monotonic and wall-clock time.
         events.append(
             {
                 "flow_id": res.flow_id,
                 "tuple": tuple_info,
-                "events": [
-                    {
-                        "start_ns": start,
-                        "end_ns": end,
-                        "start_unix_ns": start_unix,
-                        "end_unix_ns": end_unix,
-                    }
-                    for start, end, start_unix, end_unix in res.ground_truth
-                ],
+                "flow_tag": flow_tag,
+                "expected_function": expected_function,
+                # Compact encoding to keep truth logs reasonably sized:
+                # [start_monotonic_ns, end_monotonic_ns, start_unix_ns, end_unix_ns]
+                "events": [[start, end, start_unix, end_unix] for start, end, start_unix, end_unix in res.ground_truth],
             }
         )
+        if isinstance(tuple_info, dict):
+            src = f"{tuple_info.get('src_ip')}:{tuple_info.get('src_port')}"
+            dst = f"{tuple_info.get('dst_ip')}:{tuple_info.get('dst_port')}"
+        else:
+            src = "?"
+            dst = "?"
+        print(f"[lb-client] wrote flow_id={res.flow_id}, src={src}, dst={dst}, events={len(res.ground_truth)} to {path}")
     if not events:
         return
-    Path(path).write_text(json.dumps(events, indent=2), encoding="utf-8")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(events, separators=(",", ":"), ensure_ascii=False))
+        f.flush()
+        f.close()
 
 
 async def main() -> None:
     args = parse_args()
-    payload = b"m" * args.payload
-    truth_buffers: Optional[List[List[Tuple[int, int]]]] = None
+    base_payload = bytearray(b"m" * args.payload)
+    truth_buffers: Optional[List[List[Tuple[int, int, int, int]]]] = None
     if args.ground_truth_log:
         truth_buffers = [[] for _ in range(args.flows)]
 
     per_flow_interval = 0.0
     if args.rate and args.rate > 0.0 and args.flows:
-        print(f"Throttling to total rate {args.rate} req/s across {args.flows} flows")
+        _log(f"[lb-client] throttling total_rate={args.rate} req/s flows={args.flows}")
         per_flow_rate = float(args.rate) / float(args.flows)
         if per_flow_rate > 0.0:
             per_flow_interval = 1.0 / per_flow_rate
 
-    tasks = [
-        asyncio.create_task(
-            flow_task(
-                args.host,
-                args.port,
-                args.duration,
-                payload,
-                idx,
-                truth_buffers[idx] if truth_buffers is not None else None,
-                per_flow_interval,
+    tasks = []
+    for idx in range(args.flows):
+        payload = bytearray(base_payload)
+        expected_function = None
+        if args.flow_tag_bytes and args.flow_tag_bytes > 0:
+            if args.flow_tag_bytes == 4 and len(payload) >= 4:
+                payload[0:4] = struct.pack("<I", idx)
+            elif args.flow_tag_bytes == 2 and len(payload) >= 2:
+                payload[0:2] = struct.pack("<H", idx & 0xFFFF)
+            expected_function = f"{args.expected_function_prefix}{idx}"
+        tasks.append(
+            asyncio.create_task(
+                flow_task(
+                    args.host,
+                    args.port,
+                    args.duration,
+                    bytes(payload),
+                    idx,
+                    truth_buffers[idx] if truth_buffers is not None else None,
+                    expected_function,
+                    per_flow_interval,
+                )
             )
         )
-        for idx in range(args.flows)
-    ]
 
     results = await asyncio.gather(*tasks, return_exceptions=False)
     summary = aggregate(results, args.duration)

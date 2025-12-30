@@ -239,7 +239,8 @@ def _log_progress(artifact_dir: Path, message: str) -> None:
         log_path = artifact_dir / "progress.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(message + "\n")
+            ts = datetime.now().isoformat(timespec="seconds")
+            f.write(f"[{ts}] {message}\n")
     except Exception:
         # Best-effort only: don't break experiments if logging fails.
         pass
@@ -720,6 +721,23 @@ def _collect_remote_metrics(commands: List[CommandSpec], artifact_dir: Path) -> 
     log_path = artifact_dir / "remote_fetch.log"
     errors: List[Dict] = []
     had_activity = False
+
+    def _remote_file_size_bytes(remote: RemoteSpec, remote_path: str) -> Optional[int]:
+        """Best-effort: return remote file size in bytes (via `stat -c %s`)."""
+        try:
+            stat_cmd = remote.wrap_command(["stat", "-c", "%s", remote_path])
+            if remote.local_user and os.geteuid() == 0:
+                stat_cmd = ["sudo", "-u", remote.local_user, *stat_cmd]
+            cp = subprocess.run(stat_cmd, check=False, capture_output=True, text=True)
+            if cp.returncode != 0:
+                return None
+            out = (cp.stdout or "").strip()
+            if out.isdigit():
+                return int(out)
+            return None
+        except Exception:
+            return None
+
     with log_path.open("w", encoding="utf-8") as log:
         for spec in commands:
             if not spec.remote or not spec.remote.pull_metrics:
@@ -738,16 +756,34 @@ def _collect_remote_metrics(commands: List[CommandSpec], artifact_dir: Path) -> 
                 if spec.remote.local_user and os.geteuid() == 0:
                     _ensure_dir_writable_by_user(local_path.parent, spec.remote.local_user)
                 remote_src = f"{spec.remote.host}:{remote_path}"
+
+                # NEW: print/log remote file size before copying
+                size_bytes = _remote_file_size_bytes(spec.remote, remote_path)
+                while size_bytes == 0:
+                    # Retry once after a short delay if size is zero (file may be
+                    # in the process of being finalized on the remote side).
+                    time.sleep(0.5)
+                    print(f"[runner] retrying size check for remote file {remote_src} (was zero)")
+                    size_bytes = _remote_file_size_bytes(spec.remote, remote_path)
+                ts = datetime.now().isoformat(timespec="seconds")
+                size_str = "unknown" if size_bytes is None else str(size_bytes)
+                msg = f"[{ts}]   remote_size_bytes={size_str} path={remote_src}"
+                print(msg)
+                log.write(msg + "\n")
+                
                 scp_cmd = ["scp", *spec.remote.ssh_options, remote_src, str(local_path)]
                 if spec.remote.local_user and os.geteuid() == 0:
                     scp_cmd = ["sudo", "-u", spec.remote.local_user, *scp_cmd]
-                log.write(f"COPY {spec.name} {remote_src} -> {local_path}\n")
+                ts = datetime.now().isoformat(timespec="seconds")
+                log.write(f"[{ts}] COPY {spec.name} {remote_src} -> {local_path}\n")
                 try:
-                    subprocess.run(scp_cmd, check=True, capture_output=True)
-                    log.write("  status=ok\n")
+                    subprocess.run(scp_cmd, check=True, capture_output=True, text=True)
+                    ts = datetime.now().isoformat(timespec="seconds")
+                    log.write(f"[{ts}]   status=ok\n")
                 except subprocess.CalledProcessError as exc:
                     stderr = exc.stderr.decode().strip() if exc.stderr else ""
-                    log.write(f"  status=error msg={stderr}\n")
+                    ts = datetime.now().isoformat(timespec="seconds")
+                    log.write(f"[{ts}]   status=error msg={stderr}\n")
                     errors.append(
                         {
                             "command": spec.name,
@@ -955,6 +991,54 @@ def build_lb_commands(
         cmd = _split_cmd(lb.get("binary", "haproxy")) + ["-f", str(cfg_path), "-db"]
     elif impl == "external":
         cmd = _split_cmd(lb["command"])
+    elif impl == "hot_native":
+        # Build and run the native C++ LB hot server used by §5.2 flow attribution accuracy.
+        # We compile into the artifact dir for reproducibility.
+        out_dir = artifact_dir / "bin"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_bin = out_dir / "lb_hot_server"
+        src = Path("experiments/workloads/lb/lb_hot_server.cpp")
+        build_cmd = [
+            "g++",
+            "-O2",
+            "-g",
+            "-std=c++20",
+            "-pthread",
+            str(src),
+            "-o",
+            str(out_bin),
+        ]
+        specs.append(CommandSpec("lb-hot-build", build_cmd, "lb_hot_build.log", ready_wait=0.1, role="build"))
+
+        cmd = [
+            str(out_bin),
+            "--host",
+            lb.get("bind_address", "0.0.0.0"),
+            "--port",
+            str(lb.get("port", 7100)),
+            "--workers",
+            str(lb.get("workers", 8)),
+        ]
+
+        # Strict hot_func_i mapping parameters.
+        hot_funcs = lb.get("hot_funcs")
+        hot_bytes = lb.get("hot_bytes_per_func")
+        hot_stride = lb.get("hot_stride")
+        hot_rounds = lb.get("hot_rounds")
+        payload_bytes = lb.get("payload_bytes")
+        flow_tag_bytes = lb.get("flow_tag_bytes")
+        if payload_bytes is not None:
+            cmd += ["--payload-bytes", str(payload_bytes)]
+        if flow_tag_bytes is not None:
+            cmd += ["--flow-tag-bytes", str(flow_tag_bytes)]
+        if hot_funcs is not None:
+            cmd += ["--hot-funcs", str(hot_funcs)]
+        if hot_bytes is not None:
+            cmd += ["--hot-bytes-per-func", str(hot_bytes)]
+        if hot_stride is not None:
+            cmd += ["--hot-stride", str(hot_stride)]
+        if hot_rounds is not None:
+            cmd += ["--hot-rounds", str(hot_rounds)]
     else:
         cmd = _split_cmd(lb["binary"]) + [
             "--host",
@@ -966,6 +1050,18 @@ def build_lb_commands(
         ]
         for backend in lb.get("backends", []):
             cmd += ["--backend", f"{backend['host']}:{backend['port']}"]
+
+        # Optional synthetic cache-miss generator for flow attribution accuracy
+        # experiments. Defaults to disabled when not set in config.
+        hot_bytes = lb.get("hot_bytes_per_slot")
+        hot_slots = lb.get("hot_slots")
+        hot_rounds = lb.get("hot_rounds")
+        if hot_bytes is not None:
+            cmd += ["--hot-bytes-per-slot", str(hot_bytes)]
+        if hot_slots is not None:
+            cmd += ["--hot-slots", str(hot_slots)]
+        if hot_rounds is not None:
+            cmd += ["--hot-rounds", str(hot_rounds)]
     cmd = _apply_prefix(cmd, lb.get("numa_policy"))
     specs.append(CommandSpec("lb-node", cmd, "lb.log", ready_wait=2.0, role="server"))
 
@@ -1006,6 +1102,16 @@ def build_lb_commands(
         extra_artifacts.append((truth_path, truth_remote_path))
     else:
         truth_arg = None
+
+    # If the client runs remotely, proactively remove any stale remote metrics/truth
+    # from previous runs. This prevents the fetch phase from copying leftover large
+    # files when the remote client fails early.
+    if remote:
+        remote_paths = [remote_metrics]
+        if truth_remote_path:
+            remote_paths.append(truth_remote_path)
+        clean_cmd = remote.wrap_command(["rm", "-f", *remote_paths])
+        specs.append(CommandSpec("lb-client-remote-clean", clean_cmd, "lb_client_remote_clean.log", ready_wait=0.1, role="build"))
     impl = client.get("implementation", "builtin")
     rate = client.get("rate")
     # If the client will be run on a remote host and we intend to pass --rate,
@@ -1057,6 +1163,13 @@ def build_lb_commands(
             "--metrics-file",
             metrics_arg,
         ]
+        # Optional strict flow tagging for function-level attribution.
+        flow_tag_bytes = client.get("flow_tag_bytes")
+        expected_prefix = client.get("expected_function_prefix")
+        if flow_tag_bytes is not None:
+            cmd += ["--flow-tag-bytes", str(flow_tag_bytes)]
+        if expected_prefix is not None:
+            cmd += ["--expected-function-prefix", str(expected_prefix)]
         # forward an optional per-workload total rate to the client generator
         if rate is not None:
             cmd += ["--rate", str(rate)]
@@ -1312,7 +1425,8 @@ def execute_workload(
     root_path = Path(artifact_root) if artifact_root else None
     artifact_dir = ensure_artifact_dir(cfg["workload"], artifact_root=root_path)
     _log_progress(artifact_dir, f"[runner] starting workload={cfg['workload']} mode={mode} duration={duration}s")
-    print(f"  Workload={cfg['workload']} Mode={mode} Duration={duration}s Artifacts={artifact_dir}")
+    ts = datetime.now().isoformat(timespec="seconds")
+    print(f"[{ts}] Workload={cfg['workload']} Mode={mode} Duration={duration}s Artifacts={artifact_dir}")
     _capture_host_facts(artifact_dir)
     _log_progress(artifact_dir, "[runner] building command plan")
     commands = build_commands(cfg, duration, artifact_dir, overrides.get("workload"))
@@ -1428,7 +1542,24 @@ def execute_workload(
             if mode == "microsentinel":
                 _configure_microsentinel_agent(agent_config, ms_runtime_overrides, artifact_dir)
 
-            for spec in commands:
+            # Build steps (e.g., compiling native workloads) must complete before
+            # we launch long-running workload processes.
+            build_specs = [spec for spec in commands if str(spec.role) == "build"]
+            run_specs = [spec for spec in commands if str(spec.role) != "build"]
+            for spec in build_specs:
+                log_path = artifact_dir / spec.log_suffix
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write(f"[launcher] running build step {spec.name}: {' '.join(spec.argv)}\n")
+                    f.flush()
+                    env = os.environ.copy()
+                    if spec.env:
+                        env.update(spec.env)
+                    cp = subprocess.run(spec.argv, stdout=f, stderr=subprocess.STDOUT, env=env, check=False)
+                    if cp.returncode != 0:
+                        raise ProcessLaunchError(f"{spec.name} failed with code {cp.returncode}")
+
+            for spec in run_specs:
                 log_path = artifact_dir / spec.log_suffix
                 proc = stack.enter_context(
                     managed_process(
@@ -1483,6 +1614,7 @@ def execute_workload(
     finally:
         _log_progress(artifact_dir, "[runner] collecting remote metrics")
         try:
+            # time.sleep(5)  # allow remote files to settle
             remote_log, remote_errors = _collect_remote_metrics(commands, artifact_dir)
             if remote_log:
                 monitor_logs["remote_fetch"] = str(remote_log)

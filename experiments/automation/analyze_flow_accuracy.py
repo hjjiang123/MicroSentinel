@@ -31,6 +31,7 @@ from typing import Dict, Iterable, List, Optional, Tuple, Any
 class TruthFlow:
     flow_id: int
     intervals: List[Tuple[int, int]]  # [start_ns, end_ns]
+    expected_function: Optional[str] = None
 
 
 def _load_json(path: Path):
@@ -40,7 +41,7 @@ def _load_json(path: Path):
         size = path.stat().st_size
     except OSError:
         size = 0
-    max_bytes = int(64 * 1024 * 1024)  # 64 MiB default safety cap
+    max_bytes = int(512 * 1024 * 1024)  # 512 MiB default safety cap
     if size and size > max_bytes:
         raise RuntimeError(f"truth file too large ({size} bytes > {max_bytes}); refusing to load: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -119,6 +120,9 @@ def _parse_truth(path: Path) -> Tuple[List[TruthFlow], str]:
         return flows, "unknown"
 
     # Prefer wall-clock Unix time if present; otherwise fall back to monotonic time.
+    # Truth events can be either a dict (legacy) or a compact list:
+    # - dict: {start_ns,end_ns,start_unix_ns,end_unix_ns}
+    # - list: [start_ns,end_ns,start_unix_ns,end_unix_ns]
     time_domain = "monotonic_ns"
     for entry in raw:
         if not isinstance(entry, dict):
@@ -128,6 +132,9 @@ def _parse_truth(path: Path) -> Tuple[List[TruthFlow], str]:
             continue
         ev0 = events[0]
         if isinstance(ev0, dict) and ("start_unix_ns" in ev0 or "end_unix_ns" in ev0):
+            time_domain = "unix_ns"
+            break
+        if isinstance(ev0, (list, tuple)) and len(ev0) >= 4:
             time_domain = "unix_ns"
             break
 
@@ -142,17 +149,33 @@ def _parse_truth(path: Path) -> Tuple[List[TruthFlow], str]:
         except Exception:
             continue
         intervals: List[Tuple[int, int]] = []
+        expected_function = entry.get("expected_function")
+        if expected_function is not None:
+            expected_function = str(expected_function)
         events = entry.get("events")
         if isinstance(events, list):
             for ev in events:
-                if not isinstance(ev, dict):
-                    continue
-                if time_domain == "unix_ns":
-                    s = ev.get("start_unix_ns")
-                    e = ev.get("end_unix_ns")
+                if isinstance(ev, dict):
+                    if time_domain == "unix_ns":
+                        s = ev.get("start_unix_ns")
+                        e = ev.get("end_unix_ns")
+                    else:
+                        s = ev.get("start_ns")
+                        e = ev.get("end_ns")
+                elif isinstance(ev, (list, tuple)):
+                    if time_domain == "unix_ns":
+                        # [start_monotonic_ns, end_monotonic_ns, start_unix_ns, end_unix_ns]
+                        if len(ev) < 4:
+                            continue
+                        s = ev[2]
+                        e = ev[3]
+                    else:
+                        if len(ev) < 2:
+                            continue
+                        s = ev[0]
+                        e = ev[1]
                 else:
-                    s = ev.get("start_ns")
-                    e = ev.get("end_ns")
+                    continue
                 try:
                     s_ns = int(s)
                     e_ns = int(e)
@@ -163,7 +186,7 @@ def _parse_truth(path: Path) -> Tuple[List[TruthFlow], str]:
                 intervals.append((s_ns, e_ns))
         if intervals:
             intervals.sort()
-            flows.append(TruthFlow(flow_id=flow_id, intervals=_merge_intervals(intervals)))
+            flows.append(TruthFlow(flow_id=flow_id, intervals=_merge_intervals(intervals), expected_function=expected_function))
     return flows, time_domain
 
 
@@ -330,13 +353,6 @@ def analyze_single_artifact(
         rollup_sql = (
             "SELECT flow_id, toUnixTimestamp64Nano(window_start) AS ws_ns, sum(samples) AS samples "
             f"FROM {rollup_table} "
-            f"WHERE host = {host_sql} AND ws_ns BETWEEN {t0} AND {t1} "
-            "GROUP BY flow_id, ws_ns"
-        )
-        # ClickHouse doesn't allow alias in WHERE reliably; rewrite using the function.
-        rollup_sql = (
-            "SELECT flow_id, toUnixTimestamp64Nano(window_start) AS ws_ns, sum(samples) AS samples "
-            f"FROM {rollup_table} "
             f"WHERE host = {host_sql} AND toUnixTimestamp64Nano(window_start) BETWEEN {t0} AND {t1} "
             "GROUP BY flow_id, ws_ns"
         )
@@ -383,6 +399,66 @@ def analyze_single_artifact(
             {"flow_id": fid, "attributed": v["attributed"], "correct": v["correct"], "accuracy": (v["correct"] / v["attributed"]) if v["attributed"] else 0.0}
             for fid, v in sorted(per_flow.items(), key=lambda kv: kv[0])
         ]
+
+        # Optional: function attribution accuracy, when truth provides expected_function.
+        expected_map: Dict[int, str] = {
+            tf.flow_id: tf.expected_function for tf in truth if isinstance(tf.expected_function, str) and tf.expected_function
+        }
+        if expected_map:
+            func_sql = (
+                "SELECT fr.flow_id AS flow_id, "
+                "toUnixTimestamp64Nano(fr.window_start) AS ws_ns, "
+                "sum(fr.samples) AS samples, "
+                "if(length(st.frames) >= 1, st.frames[1].2, '') AS func "
+                f"FROM {rollup_table} AS fr "
+                "LEFT JOIN ms_stack_traces AS st ON (st.host = fr.host AND st.stack_id = fr.callstack_id) "
+                f"WHERE fr.host = {host_sql} AND toUnixTimestamp64Nano(fr.window_start) BETWEEN {t0} AND {t1} "
+                "GROUP BY flow_id, ws_ns, func"
+            )
+            func_rows = _ch_rows(ch.query_json(func_sql))
+            func_total = 0
+            func_correct = 0
+            per_flow_func: Dict[int, Dict[str, int]] = {}
+            for row in func_rows:
+                try:
+                    fid = int(row.get("flow_id"))
+                    ws_ns = int(row.get("ws_ns"))
+                    samples = int(row.get("samples"))
+                    func = str(row.get("func") or "")
+                except Exception:
+                    continue
+                intervals = truth_map.get(fid)
+                if not intervals:
+                    continue
+                bucket_s = ws_ns
+                bucket_e = ws_ns + window_ns
+                if not _interval_overlaps(intervals, bucket_s, bucket_e):
+                    continue
+                exp = expected_map.get(fid)
+                if not exp:
+                    continue
+                func_total += samples
+                if exp in func:
+                    func_correct += samples
+                pf = per_flow_func.setdefault(fid, {"total": 0, "correct": 0})
+                pf["total"] += samples
+                if exp in func:
+                    pf["correct"] += samples
+
+            report.setdefault("metrics", {})
+            if isinstance(report["metrics"], dict):
+                report["metrics"]["function_accuracy"] = (func_correct / func_total) if func_total else 0.0
+            report["function_counts"] = {"in_truth_samples": func_total, "correct_samples": func_correct}
+            report["per_flow_function"] = [
+                {
+                    "flow_id": fid,
+                    "total": v["total"],
+                    "correct": v["correct"],
+                    "accuracy": (v["correct"] / v["total"]) if v["total"] else 0.0,
+                }
+                for fid, v in sorted(per_flow_func.items(), key=lambda kv: kv[0])
+            ]
+
         report["ok"] = True
         return report
     except Exception as exc:

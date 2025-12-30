@@ -15,6 +15,15 @@ namespace micro_sentinel {
 
 namespace {
 
+static inline std::string TrimCopy(std::string s) {
+    auto first = s.find_first_not_of(' ');
+    if (first == std::string::npos)
+        return std::string{};
+    auto last = s.find_last_not_of(' ');
+    s = s.substr(first, last - first + 1);
+    return s;
+}
+
 uint64_t NowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
@@ -142,8 +151,32 @@ CodeLocation Symbolizer::SymbolizeAddress(const MemoryRegion &region, uint64_t i
     CodeLocation loc;
     loc.binary = region.path;
     uint64_t rel = region.file_offset + (ip - region.start);
+
+    const std::string raw_path = TrimCopy(region.path);
+    if (raw_path.empty() || raw_path.front() == '[') {
+        std::ostringstream oss;
+        oss << "0x" << std::hex << ip;
+        loc.function = oss.str();
+        loc.source_file = raw_path.empty() ? std::string{"<unknown>"} : raw_path;
+        return loc;
+    }
+
+    std::string exe_path = raw_path;
+    if (auto hash = exe_path.find('#'); hash != std::string::npos)
+        exe_path = exe_path.substr(0, hash);
+    exe_path = TrimCopy(exe_path);
+
+    std::error_code ec;
+    if (exe_path.empty() || !std::filesystem::exists(exe_path, ec) || !std::filesystem::is_regular_file(exe_path, ec)) {
+        std::ostringstream oss;
+        oss << "0x" << std::hex << ip;
+        loc.function = oss.str();
+        loc.source_file = raw_path;
+        return loc;
+    }
+
     std::ostringstream cmd;
-    cmd << "addr2line -C -f -e \"" << region.path << "\" 0x" << std::hex << rel;
+    cmd << "addr2line -C -f -e \"" << exe_path << "\" 0x" << std::hex << rel;
     std::array<char, 512> buffer{};
     FILE *pipe = popen(cmd.str().c_str(), "r");
     if (!pipe) {
@@ -152,7 +185,7 @@ CodeLocation Symbolizer::SymbolizeAddress(const MemoryRegion &region, uint64_t i
             tmp << std::hex << ip;
             return tmp.str();
         }();
-        loc.source_file = region.path;
+        loc.source_file = raw_path;
         return loc;
     }
     if (fgets(buffer.data(), buffer.size(), pipe)) {
@@ -185,7 +218,7 @@ CodeLocation Symbolizer::SymbolizeAddress(const MemoryRegion &region, uint64_t i
         loc.function = oss.str();
     }
     if (loc.source_file.empty())
-        loc.source_file = region.path;
+        loc.source_file = raw_path;
     return loc;
 }
 

@@ -1,10 +1,10 @@
-Start testing: Nov 26 20:22 CST
+Start testing: Dec 25 22:56 CST
 ----------------------------------------------------------
 1/1 Testing: TokenBucket
 1/1 Test: TokenBucket
 Command: "/home/hjjiang/MicroSentinel/build/agent/ms_agent_tests"
 Directory: /home/hjjiang/MicroSentinel/build/agent
-"TokenBucket" start time: Nov 26 20:22 CST
+"TokenBucket" start time: Dec 25 22:56 CST
 Output:
 ----------------------------------------------------------
 All tests passed
@@ -12,8 +12,8 @@ All tests passed
 Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"TokenBucket" end time: Nov 26 20:22 CST
+"TokenBucket" end time: Dec 25 22:56 CST
 "TokenBucket" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Nov 26 20:22 CST
+End testing: Dec 25 22:56 CST
