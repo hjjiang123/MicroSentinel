@@ -39,7 +39,7 @@ std::string JsonEscape(const std::string &value) {
     return out;
 }
 
-std::string FormatWallClockNowDateTime64NsUtc() {
+std::string FormatWallClockNowDateTime64Ns() {
     using namespace std::chrono;
     const auto now = system_clock::now();
     const auto ns_since_epoch = duration_cast<nanoseconds>(now.time_since_epoch());
@@ -48,7 +48,7 @@ std::string FormatWallClockNowDateTime64NsUtc() {
 
     std::time_t tt = static_cast<std::time_t>(sec_since_epoch.count());
     std::tm tm{};
-    gmtime_r(&tt, &tm);
+    localtime_r(&tt, &tm);
 
     std::ostringstream out;
     out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.'
@@ -68,13 +68,13 @@ uint64_t NowUnixNs() {
     return static_cast<uint64_t>(duration_cast<nanoseconds>(now).count());
 }
 
-std::string FormatUnixNsDateTime64NsUtc(uint64_t unix_ns) {
+std::string FormatUnixNsDateTime64Ns(uint64_t unix_ns) {
     const uint64_t sec_since_epoch = unix_ns / 1'000'000'000ULL;
     const uint64_t nsec = unix_ns % 1'000'000'000ULL;
 
     std::time_t tt = static_cast<std::time_t>(sec_since_epoch);
     std::tm tm{};
-    gmtime_r(&tt, &tm);
+    localtime_r(&tt, &tm);
 
     std::ostringstream out;
     out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.'
@@ -286,14 +286,14 @@ void ClickHouseSink::FlushBatch() {
     const int64_t mono_to_unix_offset_ns = static_cast<int64_t>(now_unix_ns) - static_cast<int64_t>(now_mono_ns);
 
     if (!pending.empty()) {
-        const std::string ingest_ts = FormatWallClockNowDateTime64NsUtc();
+        const std::string ingest_ts = FormatWallClockNowDateTime64Ns();
         std::ostringstream payload;
         payload << "INSERT INTO " << cfg_.table << " FORMAT JSONEachRow\n";
         for (const auto &kv : pending) {
             uint64_t bucket_start_ns = kv.first.bucket * bucket_width_ns_;
             const int64_t window_unix_ns_i = static_cast<int64_t>(bucket_start_ns) + mono_to_unix_offset_ns;
             const uint64_t window_unix_ns = window_unix_ns_i > 0 ? static_cast<uint64_t>(window_unix_ns_i) : 0ULL;
-            const std::string window_start_ts = FormatUnixNsDateTime64NsUtc(window_unix_ns);
+            const std::string window_start_ts = FormatUnixNsDateTime64Ns(window_unix_ns);
             // double window_start = static_cast<double>(bucket_start_ns) / 1'000'000'000.0;
             payload << '{'
                     << "\"window_start\":\"" << JsonEscape(window_start_ts) << "\"," 
@@ -352,7 +352,7 @@ void ClickHouseSink::FlushBatch() {
     }
 
     if (!raw_pending.empty()) {
-        const std::string ingest_ts = FormatWallClockNowDateTime64NsUtc();
+        const std::string ingest_ts = FormatWallClockNowDateTime64Ns();
         std::ostringstream payload;
         payload << "INSERT INTO " << cfg_.raw_table << " FORMAT JSONEachRow\n";
         for (const auto &entry : raw_pending) {
@@ -363,7 +363,7 @@ void ClickHouseSink::FlushBatch() {
 
             const int64_t ts_unix_ns_i = static_cast<int64_t>(s.tsc) + mono_to_unix_offset_ns;
             const uint64_t ts_unix_ns = ts_unix_ns_i > 0 ? static_cast<uint64_t>(ts_unix_ns_i) : 0ULL;
-            const std::string ts_wall = FormatUnixNsDateTime64NsUtc(ts_unix_ns);
+            const std::string ts_wall = FormatUnixNsDateTime64Ns(ts_unix_ns);
             payload << '{'
                     << "\"ts\":\"" << JsonEscape(ts_wall) << "\"," 
                     << "\"ingest_ts\":\"" << JsonEscape(ingest_ts) << "\"," 

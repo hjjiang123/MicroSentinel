@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstring>
 #include <sstream>
+#include <algorithm>
 
 namespace micro_sentinel {
 
@@ -127,7 +128,18 @@ void ControlPlane::ServerLoop() {
     ::close(fd);
 }
 
-bool ControlPlane::HandleRequest(int client_fd, const std::string &request) {
+bool ControlPlane::HandleRequest(int client_fd, const std::string &initial_request) {
+    std::string request = initial_request;
+    auto body_pos = request.find("\r\n\r\n");
+    while (body_pos == std::string::npos) {
+        char buf[1024];
+        ssize_t n = ::recv(client_fd, buf, sizeof(buf), 0);
+        if (n <= 0) return false;
+        request.append(buf, n);
+        body_pos = request.find("\r\n\r\n");
+        if (request.size() > kMaxRequestSize) return false;
+    }
+
     std::istringstream iss(request);
     std::string line;
     if (!std::getline(iss, line))
@@ -139,10 +151,34 @@ bool ControlPlane::HandleRequest(int client_fd, const std::string &request) {
     if (method != "POST")
         return false;
 
-    auto body_pos = request.find("\r\n\r\n");
-    if (body_pos == std::string::npos)
-        return false;
+    // Parse Content-Length
+    size_t content_len = 0;
+    std::string lower_req = request.substr(0, body_pos);
+    std::transform(lower_req.begin(), lower_req.end(), lower_req.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    size_t cl_pos = lower_req.find("content-length:");
+    if (cl_pos != std::string::npos) {
+        size_t val_start = cl_pos + 15;
+        while (val_start < lower_req.size() && std::isspace(lower_req[val_start]))
+            val_start++;
+        size_t val_end = val_start;
+        while (val_end < lower_req.size() && std::isdigit(lower_req[val_end]))
+            val_end++;
+        if (val_end > val_start) {
+            try {
+                content_len = std::stoul(lower_req.substr(val_start, val_end - val_start));
+            } catch (...) {}
+        }
+    }
+
     std::string body = request.substr(body_pos + 4);
+    while (body.size() < content_len) {
+        char buf[1024];
+        ssize_t n = ::recv(client_fd, buf, sizeof(buf), 0);
+        if (n <= 0) return false;
+        body.append(buf, n);
+        if (body.size() > kMaxRequestSize) return false;
+    }
 
     bool result = false;
     if (path == "/api/v1/mode")

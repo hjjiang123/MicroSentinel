@@ -720,12 +720,7 @@ static __always_inline __u64 find_flow_in_history(__u64 ts_begin, __u64 ts_end)
 
 static __always_inline __u64 ms_get_attach_cookie(const void *ctx)
 {
-#if defined(BPF_FUNC_get_attach_cookie)
-    // bpf_printk("ms_get_attach_cookie: using bpf_get_attach_cookie\n");
-    return bpf_get_attach_cookie(ctx);
-#else
-    return 0;
-#endif
+    return bpf_get_attach_cookie((void *)ctx);
 }
 
 static __always_inline int ms_get_branch_snapshot(void *entries, __u32 size, __u64 flags)

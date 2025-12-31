@@ -598,7 +598,7 @@ def _resolve_output_path(artifact_dir: Path, path_str: str) -> Path:
 def ensure_artifact_dir(workload: str, artifact_root: Optional[Path] = None) -> Path:
     root = artifact_root or ARTIFACT_ROOT
     root.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"{workload}_{timestamp}"
 
     # Avoid collisions when multiple runs start within the same second.
@@ -1065,25 +1065,26 @@ def build_lb_commands(
     cmd = _apply_prefix(cmd, lb.get("numa_policy"))
     specs.append(CommandSpec("lb-node", cmd, "lb.log", ready_wait=2.0, role="server"))
 
-    backend_stub = cfg.get("backend_stub", {})
-    for idx, backend in enumerate(lb.get("backends", [])):
-        stub_impl = backend_stub.get("implementation", "builtin")
-        if stub_impl == "external":
-            backend_cmd = _split_cmd(backend_stub["command"]).copy()
-        else:
-            backend_cmd = _split_cmd(backend_stub.get("binary", "python3 experiments/workloads/lb/backend_echo.py")) + [
-                "--host",
-                backend.get("host", "127.0.0.1"),
-                "--port",
-                str(backend.get("port")),
-                "--workers",
-                str(backend_stub.get("workers", 4)),
-            ]
-        specs.append(
-            CommandSpec(
-                f"lb-backend-{idx}", backend_cmd, f"lb_backend_{idx}.log", ready_wait=1.0, role="backend"
+    if impl != "hot_native":
+        backend_stub = cfg.get("backend_stub", {})
+        for idx, backend in enumerate(lb.get("backends", [])):
+            stub_impl = backend_stub.get("implementation", "builtin")
+            if stub_impl == "external":
+                backend_cmd = _split_cmd(backend_stub["command"]).copy()
+            else:
+                backend_cmd = _split_cmd(backend_stub.get("binary", "python3 experiments/workloads/lb/backend_echo.py")) + [
+                    "--host",
+                    backend.get("host", "127.0.0.1"),
+                    "--port",
+                    str(backend.get("port")),
+                    "--workers",
+                    str(backend_stub.get("workers", 4)),
+                ]
+            specs.append(
+                CommandSpec(
+                    f"lb-backend-{idx}", backend_cmd, f"lb_backend_{idx}.log", ready_wait=1.0, role="backend"
+                )
             )
-        )
 
     client = cfg["clients"].copy()
     client_override = overrides.get("clients")
