@@ -459,6 +459,10 @@ void Symbolizer::RegisterDataObject(uint32_t pid,
     obj.type = type;
     obj.size = length;
 
+    std::ostringstream oss;
+    oss << obj.mapping << '|' << obj.permissions << '|' << std::hex << obj.base;
+    uint64_t id = HashString(oss.str(), address);
+
     DataOverride override{address, address + length, obj};
     std::lock_guard<std::mutex> lk(mu_);
     auto &entries = data_overrides_[pid];
@@ -466,6 +470,13 @@ void Symbolizer::RegisterDataObject(uint32_t pid,
         return !(existing.end <= override.start || existing.start >= override.end);
     }), entries.end());
     entries.push_back(override);
+
+    auto [it, inserted] = data_table_.try_emplace(id);
+    if (inserted) {
+        it->second.id = id;
+        it->second.object = obj;
+        dirty_data_.push_back(id);
+    }
 }
 
 } // namespace micro_sentinel

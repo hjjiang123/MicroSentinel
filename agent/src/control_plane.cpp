@@ -300,22 +300,27 @@ bool ControlPlane::HandleJitRequest(const std::string &body) {
 }
 
 bool ControlPlane::HandleDataObjectRequest(const std::string &body) {
-    if (!on_data_object_)
+    if (!on_data_object_) {
         return false;
+    }
     JsonValue root;
     std::string err;
-    if (!ParseJson(body, root, err) || !root.IsObject())
+    if (!ParseJson(body, root, err) || !root.IsObject()) {
         return false;
+    }
     const auto &obj = root.AsObject();
     auto pid_it = obj.find("pid");
     auto addr_it = obj.find("address");
     auto name_it = obj.find("name");
-    if (pid_it == obj.end() || addr_it == obj.end() || name_it == obj.end())
+    if (pid_it == obj.end() || addr_it == obj.end() || name_it == obj.end()) {
         return false;
-    if (!pid_it->second || !addr_it->second || !name_it->second)
+    }
+    if (!pid_it->second || !addr_it->second || !name_it->second) {
         return false;
-    if (!pid_it->second->IsNumber() || !addr_it->second->IsNumber() || !name_it->second->IsString())
+    }
+    if (!pid_it->second->IsNumber() || !addr_it->second->IsNumber() || !name_it->second->IsString()) {
         return false;
+    }
     DataObjectRequest req;
     req.pid = static_cast<uint32_t>(pid_it->second->AsNumber());
     req.address = static_cast<uint64_t>(addr_it->second->AsNumber());
@@ -326,8 +331,9 @@ bool ControlPlane::HandleDataObjectRequest(const std::string &body) {
     auto size_it = obj.find("size");
     if (size_it != obj.end() && size_it->second && size_it->second->IsNumber())
         req.size = static_cast<uint64_t>(size_it->second->AsNumber());
-    if (req.pid == 0 || req.address == 0 || req.name.empty())
+    if (req.pid == 0 || req.address == 0 || req.name.empty()) {
         return false;
+    }
     on_data_object_(req);
     return true;
 }

@@ -1,8 +1,8 @@
 suite: overhead
-run_s: 300
-warmup_s: 30
+run_s: 180
+warmup_s: 0
 repetitions: 1
-modes: [baseline]
+modes: [baseline,perf,microsentinel]
 overrides:
   instrumentation:
     pmu_events: "cycles,LLC-load-misses"
@@ -13,12 +13,11 @@ workloads:
   - name: kv
     config: experiments/configs/workloads/kv.yaml
     repetitions: 1
-    modes: [baseline]
+    modes: [baseline,perf,microsentinel]
     parameters:
-      delta_values_us: [5, 10, 20]
+      delta_values_us: [10]
       pmu_events:
         - ["cycles", "LLC-load-misses"]
-        - ["MEM_LOAD_RETIRED.L3_MISS", "OFFCORE_RESPONSE.ALL_RFO"]
       rate_scan:
         samples_per_core: [500, 1000, 2000]
     overrides:
@@ -51,8 +50,8 @@ workloads:
         zipf_theta: 1.0
   - name: load_balancer
     config: experiments/configs/workloads/load_balancer.yaml
-    repetitions: 3
-    modes: [baseline]
+    repetitions: 1
+    modes: [baseline,perf,microsentinel]
     parameters:
       pmu_events:
         - ["cycles", "LLC-load-misses"]
@@ -61,11 +60,20 @@ workloads:
         samples_per_core: [500, 1000, 2000]
         event_sets:
           - ["cycles", "LLC-load-misses"]
-          - ["BR_MISP_RETIRED.ALL_BRANCHES"]
     overrides:
       lb_node:
-        # Keep the default Python load balancer; haproxy requires additional packages.
+        # # Keep the default Python load balancer; haproxy requires additional packages.
+        # numa_policy: "numactl --cpunodebind=0 --membind=0"
         numa_policy: "numactl --cpunodebind=0 --membind=0"
+        # Use the native hot server so each flow maps to a distinct hot_func_i symbol.
+        implementation: hot_native
+        payload_bytes: 512
+        flow_tag_bytes: 4
+        hot_funcs: 256
+        hot_bytes_per_func: 4194304  # 4 MiB per hot_func_i
+        hot_stride: 64
+        hot_rounds: 1
+
       clients:
         implementation: builtin
         remote:
@@ -73,15 +81,14 @@ workloads:
           workdir: "/home/hjjiang/MicroSentinel"
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
-        flows: 512
+        flows: 256
   - name: nfv_service_chain
     config: experiments/configs/workloads/nfv_service_chain.yaml
-    repetitions: 3
-    modes: [baseline]
+    repetitions: 1
+    modes: [baseline,perf,microsentinel]
     parameters:
       pmu_events:
         - ["LLC-load-misses"]
-        - ["MEM_LOAD_RETIRED.L3_MISS"]
       rate_scan:
         samples_per_core: [500, 1000, 2000]
     overrides:

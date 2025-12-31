@@ -53,6 +53,7 @@ struct HotConfig {
     size_t stride = 64;
     int rounds = 1;
     int funcs = 64;
+    int active_funcs = 256;
 };
 
 static HotConfig g_hot;
@@ -96,6 +97,8 @@ static void init_hot_buffers(const HotConfig &cfg) {
 
 static inline void hot_touch(int idx) {
     if (g_hot.bytes_per_func == 0 || idx < 0 || idx >= static_cast<int>(g_hot_bufs.size()))
+        return;
+    if (idx >= g_hot.active_funcs)
         return;
     volatile uint8_t *buf = g_hot_bufs[static_cast<size_t>(idx)];
     uint64_t local = tls_sink;
@@ -787,7 +790,7 @@ static void usage(const char *argv0) {
     std::cerr
         << "Usage: " << argv0
         << " --host <ip> --port <port> --workers <n> [--payload-bytes N] [--flow-tag-bytes 0|2|4]"
-           " [--hot-bytes-per-func N] [--hot-stride N] [--hot-rounds N] [--hot-funcs N]\n";
+           " [--hot-bytes-per-func N] [--hot-stride N] [--hot-rounds N] [--hot-funcs N] [--active-funcs N]\n";
 }
 
 } // namespace
@@ -826,6 +829,8 @@ int main(int argc, char **argv) {
         } else if (a == "--hot-funcs") {
             cfg.hot_funcs = std::stoi(need("--hot-funcs"));
             hot.funcs = cfg.hot_funcs;
+        } else if (a == "--active-funcs") {
+            hot.active_funcs = std::stoi(need("--active-funcs"));
         } else if (a == "--help" || a == "-h") {
             usage(argv[0]);
             return 0;
@@ -843,6 +848,8 @@ int main(int argc, char **argv) {
         cfg.hot_funcs = 256;
         hot.funcs = 256;
     }
+    if (hot.active_funcs < 0)
+        hot.active_funcs = 0;
 
     init_hot_buffers(hot);
 
@@ -850,7 +857,7 @@ int main(int argc, char **argv) {
               << " workers=" << cfg.workers << " payload=" << cfg.payload_bytes
               << " tag_bytes=" << cfg.flow_tag_bytes << " hot_funcs=" << cfg.hot_funcs
               << " hot_bytes=" << hot.bytes_per_func << " hot_stride=" << hot.stride
-              << " hot_rounds=" << hot.rounds << std::endl;
+              << " hot_rounds=" << hot.rounds << " active_funcs=" << hot.active_funcs << std::endl;
 
     // Use reuseport so each worker has its own accept queue, improving per-flow stability.
     std::vector<int> listen_fds;

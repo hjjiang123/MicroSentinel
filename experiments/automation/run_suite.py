@@ -292,6 +292,24 @@ def run_suite(args):
     if args.summary:
         Path(args.summary).write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
+    if args.suite == "data_object" and not args.dry_run:
+        print(f"  [run_suite] Running analysis for {args.suite}...")
+        try:
+            analysis_out = suite_run_dir / "analysis_result.json"
+            analysis_csv = suite_run_dir / "analysis_summary.csv"
+            cmd = [
+                sys.executable, "-m", "experiments.automation.analyze_data_object",
+                "--artifact-root", str(suite_run_dir),
+                "--suite", "data_object",
+                "--agent-conf", args.agent_config,
+                "--out", str(analysis_out),
+                "--out-csv", str(analysis_csv)
+            ]
+            subprocess.run(cmd, check=True)
+            print(f"  [run_suite] Analysis saved to {analysis_out}")
+        except Exception as e:
+            print(f"  [run_suite] Analysis failed: {e}")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run an experiment suite")

@@ -358,7 +358,7 @@ def analyze_single_artifact(
         )
         rows = _ch_rows(ch.query_json(rollup_sql))
 
-        in_truth = 0
+        attributed_rollup = 0
         correct = 0
         per_flow: Dict[int, Dict[str, int]] = {}
 
@@ -369,26 +369,30 @@ def analyze_single_artifact(
                 samples = int(row.get("samples"))
             except Exception:
                 continue
-            intervals = truth_map.get(fid)
-            if not intervals:
+
+            if fid == 0:
                 continue
-            in_truth += samples
-            bucket_s = ws_ns
-            bucket_e = ws_ns + window_ns
-            if _interval_overlaps(intervals, bucket_s, bucket_e):
-                correct += samples
+
+            attributed_rollup += samples
+
+            intervals = truth_map.get(fid)
             pf = per_flow.setdefault(fid, {"attributed": 0, "correct": 0})
             pf["attributed"] += samples
-            if _interval_overlaps(intervals, bucket_s, bucket_e):
-                pf["correct"] += samples
+
+            if intervals:
+                bucket_s = ws_ns
+                bucket_e = ws_ns + window_ns
+                if _interval_overlaps(intervals, bucket_s, bucket_e):
+                    correct += samples
+                    pf["correct"] += samples
 
         coverage_all = (attributed / total) if total else 0.0
-        accuracy = (correct / in_truth) if in_truth else 0.0
+        accuracy = (correct / attributed_rollup) if attributed_rollup else 0.0
 
         report["counts"] = {
             "total_raw_samples": total,
             "attributed_raw_samples": attributed,
-            "attributed_samples_in_truth_flows": in_truth,
+            "attributed_rollup_samples": attributed_rollup,
             "correct_samples_in_truth_flows": correct,
         }
         report["metrics"] = {
@@ -409,11 +413,11 @@ def analyze_single_artifact(
                 "SELECT fr.flow_id AS flow_id, "
                 "toUnixTimestamp64Nano(fr.window_start) AS ws_ns, "
                 "sum(fr.samples) AS samples, "
-                "if(length(st.frames) >= 1, st.frames[1].2, '') AS func "
+                "st.frames.2 AS funcs "
                 f"FROM {rollup_table} AS fr "
                 "LEFT JOIN ms_stack_traces AS st ON (st.host = fr.host AND st.stack_id = fr.callstack_id) "
                 f"WHERE fr.host = {host_sql} AND toUnixTimestamp64Nano(fr.window_start) BETWEEN {t0} AND {t1} "
-                "GROUP BY flow_id, ws_ns, func"
+                "GROUP BY flow_id, ws_ns, funcs"
             )
             func_rows = _ch_rows(ch.query_json(func_sql))
             func_total = 0
@@ -424,9 +428,13 @@ def analyze_single_artifact(
                     fid = int(row.get("flow_id"))
                     ws_ns = int(row.get("ws_ns"))
                     samples = int(row.get("samples"))
-                    func = str(row.get("func") or "")
+                    funcs = row.get("funcs")
                 except Exception:
                     continue
+
+                if not isinstance(funcs, list):
+                    funcs = []
+
                 intervals = truth_map.get(fid)
                 if not intervals:
                     continue
@@ -437,18 +445,44 @@ def analyze_single_artifact(
                 exp = expected_map.get(fid)
                 if not exp:
                     continue
+                
                 func_total += samples
-                if exp in func:
+
+                found = False
+                for f in funcs:
+                    if exp in str(f):
+                        found = True
+                        break
+
+                if found:
                     func_correct += samples
                 pf = per_flow_func.setdefault(fid, {"total": 0, "correct": 0})
                 pf["total"] += samples
-                if exp in func:
+                if found:
                     pf["correct"] += samples
+
+            # Calculate flow-level presence accuracy: % of flows where we found the function at least once.
+            flows_with_func = 0
+            flows_total_checked = 0
+            for fid, stats in per_flow_func.items():
+                if stats["total"] > 0:
+                    flows_total_checked += 1
+                    if stats["correct"] > 0:
+                        flows_with_func += 1
 
             report.setdefault("metrics", {})
             if isinstance(report["metrics"], dict):
-                report["metrics"]["function_accuracy"] = (func_correct / func_total) if func_total else 0.0
-            report["function_counts"] = {"in_truth_samples": func_total, "correct_samples": func_correct}
+                # Old metric (sample-level):
+                report["metrics"]["function_accuracy_sample_level"] = (func_correct / func_total) if func_total else 0.0
+                # New metric (flow-level presence):
+                report["metrics"]["function_accuracy"] = (flows_with_func / flows_total_checked) if flows_total_checked else 0.0
+
+            report["function_counts"] = {
+                "in_truth_samples": func_total,
+                "correct_samples": func_correct,
+                "flows_checked": flows_total_checked,
+                "flows_with_function": flows_with_func
+            }
             report["per_flow_function"] = [
                 {
                     "flow_id": fid,
@@ -469,6 +503,16 @@ def analyze_single_artifact(
 def _expand_artifacts(arg: str) -> List[Path]:
     p = Path(arg)
     if p.is_dir():
+        # If this dir is itself a run (has run_result.json or plan.json), return it.
+        if (p / "run_result.json").exists() or (p / "plan.json").exists():
+            return [p]
+        # Otherwise, check subdirectories for runs.
+        runs = []
+        for child in p.iterdir():
+            if child.is_dir() and ((child / "run_result.json").exists() or (child / "plan.json").exists()):
+                runs.append(child)
+        if runs:
+            return sorted(runs)
         return [p]
     if p.is_file() and p.suffix.lower() == ".json":
         obj = _load_json(p)
@@ -561,6 +605,10 @@ def main() -> None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(payload, encoding="utf-8")
     else:
+        args.out = args.artifacts + "/analyze_flow_accuracy_output.json"
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(payload, encoding="utf-8")
         print(payload)
 
 

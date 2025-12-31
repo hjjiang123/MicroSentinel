@@ -14,6 +14,8 @@ import shlex
 import shutil
 import socket
 import subprocess
+import threading
+import re
 import time
 import sys
 import urllib.error
@@ -980,6 +982,19 @@ def build_lb_commands(
 ) -> List[CommandSpec]:
     overrides = overrides or {}
     specs: List[CommandSpec] = []
+
+    # Prepare client config first to determine flow counts
+    client = cfg["clients"].copy()
+    client_override = overrides.get("clients")
+    if not isinstance(client_override, dict):
+        client_override = {}
+    client.update(client_override)
+
+    hot_flows = client.get("hot_flows")
+    cold_flows = client.get("cold_flows")
+    if hot_flows is not None and cold_flows is not None:
+        client["flows"] = int(hot_flows) + int(cold_flows)
+
     lb = cfg["lb_node"].copy()
     lb_override = overrides.get("lb_node")
     if not isinstance(lb_override, dict):
@@ -1039,6 +1054,10 @@ def build_lb_commands(
             cmd += ["--hot-stride", str(hot_stride)]
         if hot_rounds is not None:
             cmd += ["--hot-rounds", str(hot_rounds)]
+        
+        # If hot_flows is specified in client config, pass it as active_funcs to server
+        if hot_flows is not None:
+            cmd += ["--active-funcs", str(hot_flows)]
     else:
         cmd = _split_cmd(lb["binary"]) + [
             "--host",
@@ -1086,11 +1105,6 @@ def build_lb_commands(
                 )
             )
 
-    client = cfg["clients"].copy()
-    client_override = overrides.get("clients")
-    if not isinstance(client_override, dict):
-        client_override = {}
-    client.update(client_override)
     metrics_path = _metric_path(artifact_dir, "lb_client")
     remote = _build_remote_spec(client.get("remote"))
     metrics_arg, remote_metrics = _resolve_metrics_destination(metrics_path, remote)
@@ -1407,6 +1421,68 @@ def _capture_host_facts(artifact_dir: Path) -> None:
         pass
 
 
+def _monitor_dynamic_objects(
+    log_path: Path,
+    pid: int,
+    control_url: str,
+    stop_event: threading.Event,
+    artifact_dir: Path
+) -> None:
+    """Tail the server log and register objects dynamically."""
+    _log_progress(artifact_dir, f"[monitor] starting dynamic object registration from {log_path.name} for PID {pid}")
+    
+    # Wait for file to exist
+    for _ in range(50):
+        if log_path.exists():
+            break
+        if stop_event.is_set():
+            return
+        time.sleep(0.1)
+    
+    if not log_path.exists():
+        _log_progress(artifact_dir, f"[monitor] log file {log_path} never appeared")
+        return
+
+    layout_regex = re.compile(r"\[data_layout\] object=(\w+) type=(\w+) start=(0x[0-9a-f]+) end=(0x[0-9a-f]+) size=(\d+)")
+    registered = set()
+    
+    # We use a simple polling loop to read the file
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(0.1)
+                    continue
+                
+                match = layout_regex.search(line)
+                if match:
+                    obj_name = match.group(1)
+                    if obj_name in registered:
+                        continue
+                    
+                    obj_type = match.group(2)
+                    start_addr = int(match.group(3), 16)
+                    size = int(match.group(5))
+                    
+                    payload = {
+                        "pid": pid,
+                        "address": start_addr,
+                        "name": obj_name,
+                        "type": obj_type,
+                        "size": size
+                    }
+                    
+                    ok, err = _post_control_request(control_url, "/api/v1/symbols/data", payload)
+                    if ok:
+                        _log_progress(artifact_dir, f"[monitor] registered {obj_name} @ {hex(start_addr)}")
+                        registered.add(obj_name)
+                    else:
+                        _log_progress(artifact_dir, f"[monitor] failed to register {obj_name}: {err}")
+    except Exception as e:
+        _log_progress(artifact_dir, f"[monitor] exception: {e}")
+
+
 def execute_workload(
     workload: str,
     mode: str,
@@ -1598,7 +1674,42 @@ def execute_workload(
             tracked_pids.extend([int(proc.pid) for _, proc in running if getattr(proc, "pid", None)])
             monitor_logs = _launch_monitors(duration, artifact_dir, stack, tracked_pids)
             _log_progress(artifact_dir, "[runner] host monitors started; entering steady-state run")
+
+            monitor_stop_event = None
+            monitor_thread = None
+            if instr_overrides.get("dynamic_objects"):
+                monitor_stop_event = threading.Event()
+                # Find server process
+                server_spec = None
+                server_proc = None
+                for spec, proc in running:
+                    if spec.role == "server":
+                        server_spec = spec
+                        server_proc = proc
+                        break
+                
+                if server_spec and server_proc:
+                    log_path = artifact_dir / server_spec.log_suffix
+                    pid = int(server_proc.pid)
+                    control_addr = instr_overrides.get("control_address") or "127.0.0.1"
+                    control_port = instr_overrides.get("control_port") or 9201
+                    control_url = f"http://{control_addr}:{control_port}"
+                    
+                    monitor_thread = threading.Thread(
+                        target=_monitor_dynamic_objects,
+                        args=(log_path, pid, control_url, monitor_stop_event, artifact_dir),
+                        daemon=True
+                    )
+                    monitor_thread.start()
+                else:
+                    _log_progress(artifact_dir, "[runner] dynamic_objects requested but no server process found")
+
             time.sleep(duration)
+
+            if monitor_stop_event:
+                monitor_stop_event.set()
+            if monitor_thread:
+                monitor_thread.join(timeout=2.0)
 
             # Allow client-side generators a brief grace period to flush metrics/truth
             # before the ExitStack teardown terminates all managed processes.

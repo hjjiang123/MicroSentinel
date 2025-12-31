@@ -23,7 +23,7 @@ workloads:
         implementation: hot_native
         payload_bytes: 512
         flow_tag_bytes: 4
-        hot_funcs: 64
+        hot_funcs: 256
         hot_bytes_per_func: 4194304  # 4 MiB per hot_func_i
         hot_stride: 64
         hot_rounds: 1
@@ -34,7 +34,9 @@ workloads:
           workdir: "/home/hjjiang/MicroSentinel"
           metrics_dir: "/home/hjjiang/MicroSentinel/artifacts/remote"
         generator: python3 experiments/workloads/lb/lb_client.py
-        flows: 64
+        # flows: 64
+        hot_flows: 256
+        cold_flows: 0
         flow_tag_bytes: 4
         expected_function_prefix: "hot_func_"
         ground_truth_log: metrics/flow_truth.json

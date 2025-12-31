@@ -253,11 +253,37 @@ class GroupKey:
         }
 
 
+def _parse_server_layout(artifact_dir: Path) -> List[Dict[str, Any]]:
+    log_path = artifact_dir / "kv_server.log"
+    if not log_path.exists():
+        return []
+    
+    objects = []
+    layout_regex = re.compile(r"\[data_layout\] object=(\w+) type=(\w+) start=(0x[0-9a-f]+) end=(0x[0-9a-f]+) size=(\d+)")
+    
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                match = layout_regex.search(line)
+                if match:
+                    objects.append({
+                        "name": match.group(1),
+                        "type": match.group(2),
+                        "start": int(match.group(3), 16),
+                        "end": int(match.group(4), 16),
+                        "size": int(match.group(5))
+                    })
+    except Exception:
+        pass
+    return objects
+
+
 def analyze_one(
     artifact_dir: Path,
     ch: ClickHouse,
     rollup_table: str,
     data_objects_table: str,
+    raw_table: str,
     slack_s: int,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {"artifact_dir": str(artifact_dir), "ok": False}
@@ -359,6 +385,61 @@ def analyze_one(
         out["error"] = "no data_object rows in ClickHouse for this run"
         return out
 
+    # --- Metric Calculation ---
+    objects = _parse_server_layout(artifact_dir)
+    if objects:
+        # Ground Truth from Raw Samples
+        raw_counts = {obj["name"]: 0 for obj in objects}
+        
+        # Fetch raw samples
+        sql_raw = (
+            f"SELECT data_addr FROM {raw_table} "
+            f"WHERE host = {_sql_str(host)} "
+            f"  AND toUnixTimestamp64Nano(ts) BETWEEN {t0} AND {t1} "
+            f"  AND data_addr != 0"
+        )
+        
+        try:
+            raw_rows = _ch_rows(ch.query_json(sql_raw))
+            for row in raw_rows:
+                addr = int(row.get("data_addr") or 0)
+                for obj in objects:
+                    if obj["start"] <= addr < obj["end"]:
+                        raw_counts[obj["name"]] += 1
+                        break
+        except Exception as e:
+            out["warning_raw"] = str(e)
+
+        # Attributed from Rollup
+        attributed_counts = {obj["name"]: 0 for obj in objects}
+        for row in rows:
+            name = row.get("mapping")
+            samples = int(row.get("samples") or 0)
+            if name in attributed_counts:
+                attributed_counts[name] += samples
+        
+        # Calculate Accuracy
+        total_raw = sum(raw_counts.values())
+        total_attr = sum(attributed_counts.values())
+        
+        accuracy = 0.0
+        if total_raw > 0:
+            matched = 0
+            for name in raw_counts:
+                matched += min(raw_counts[name], attributed_counts[name])
+            accuracy = (matched / total_raw) * 100.0
+            
+        out["metrics"] = {
+            "attribution_accuracy": accuracy,
+            "raw_samples": total_raw,
+            "attributed_samples": total_attr,
+            "raw_counts": raw_counts,
+            "attributed_counts": attributed_counts,
+            "cache_line_consistency": "N/A"
+        }
+    else:
+        out["warning"] = "no data layout found in kv_server.log"
+
     # Compute per-pmu totals to produce shares.
     totals: Dict[int, float] = {}
     totals_samples: Dict[int, int] = {}
@@ -418,6 +499,7 @@ def analyze(
     clickhouse_endpoint: str,
     rollup_table: str,
     data_objects_table: str,
+    raw_table: str,
     slack_s: int,
 ) -> Dict[str, Any]:
     ch = ClickHouse(clickhouse_endpoint)
@@ -449,7 +531,7 @@ def analyze(
         if suite_filter and suite != suite_filter:
             continue
 
-        report = analyze_one(artifact_dir, ch, rollup_table, data_objects_table, slack_s)
+        report = analyze_one(artifact_dir, ch, rollup_table, data_objects_table, raw_table, slack_s)
         per_run.append(report)
         if not report.get("ok"):
             continue
@@ -571,6 +653,7 @@ def main() -> int:
     ap.add_argument("--agent-conf", default="agent/agent.conf", help="Path to agent.conf (for ClickHouse endpoint/table names)")
     ap.add_argument("--clickhouse-endpoint", default=None, help="Override ClickHouse HTTP endpoint")
     ap.add_argument("--rollup-table", default=None, help="Override rollup table (default from agent.conf)")
+    ap.add_argument("--raw-table", default=None, help="Override raw table (default from agent.conf)")
     ap.add_argument("--data-objects-table", default="ms_data_objects", help="Override data objects table")
     ap.add_argument("--slack-s", type=int, default=10, help="Extra seconds added around derived time window")
     ap.add_argument("--out", default=None, help="Write JSON report")
@@ -580,6 +663,7 @@ def main() -> int:
     conf = _parse_agent_conf(Path(args.agent_conf))
     endpoint = args.clickhouse_endpoint or conf.get("clickhouse_endpoint") or "http://127.0.0.1:8123"
     rollup = args.rollup_table or conf.get("clickhouse_table") or "ms_flow_rollup"
+    raw = args.raw_table or conf.get("clickhouse_raw_table") or "ms_raw_samples"
     suite_filter = args.suite if args.suite else None
 
     report = analyze(
@@ -588,6 +672,7 @@ def main() -> int:
         clickhouse_endpoint=endpoint,
         rollup_table=rollup,
         data_objects_table=args.data_objects_table,
+        raw_table=raw,
         slack_s=max(0, int(args.slack_s)),
     )
 

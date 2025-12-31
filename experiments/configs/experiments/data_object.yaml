@@ -1,6 +1,6 @@
 suite: data_object
-run_s: 120
-warmup_s: 20
+run_s: 180
+warmup_s: 0
 workload: kv
 config: experiments/configs/workloads/kv.yaml
 modes:
@@ -10,20 +10,16 @@ overrides:
     suite: data_object
   instrumentation:
     object_map_preset: kv_hotset
+    dynamic_objects: true
+    pmu_events: "MEM_LOAD_RETIRED.L3_MISS,OFFCORE_RESPONSE.ALL_RFO"
   workload:
     server:
-      implementation: builtin
-      binary: "python3 experiments/workloads/kv/kv_server.py"
-      dataset:
-        key_space: 131072
-        value_size_bytes: 512
-      truth_file: "truth/kv_server.json"
-      truth_limit: 100000
+      implementation: external
+      # Use port 7000 to match kv.yaml defaults
+      command: "experiments/workloads/lb/lb_hot_server_5.3_v1 --host 0.0.0.0 --port 7000 --workers 4 --payload-bytes 512 --stride-bytes 256 --rounds 1000"
     clients:
       implementation: builtin
-      connections_per_instance: 64
-      annotations_file: "truth/kv_client_{idx}.json"
-parameters:
-  pmu_events:
-    - [MEM_LOAD_RETIRED.L3_MISS, OFFCORE_RESPONSE.ALL_RFO]
-notes: "ensure KV server binary is rebuilt with -fno-omit-frame-pointer and exports symbols"
+      generator: "python3 experiments/workloads/lb/data_object_client.py"
+      connections_per_instance: 16
+      duration: 180
+

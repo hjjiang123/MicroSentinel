@@ -393,6 +393,9 @@ def _write_csv(path: Path, report: Dict[str, Any]) -> None:
         "baseline_n",
         "perf_n",
         "microsentinel_n",
+        "baseline_cpu",
+        "perf_cpu",
+        "microsentinel_cpu",
     ]
 
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -406,6 +409,7 @@ def _write_csv(path: Path, report: Dict[str, Any]) -> None:
             perf = summary.get("perf") or {}
             ms = summary.get("microsentinel") or {}
             overhead = g.get("overhead_pct") or {}
+            cpu_usage = g.get("cpu_usage_percent") or {}
             w.writerow(
                 {
                     "suite": g.get("suite") or "",
@@ -422,6 +426,9 @@ def _write_csv(path: Path, report: Dict[str, Any]) -> None:
                     "baseline_n": baseline.get("n"),
                     "perf_n": perf.get("n"),
                     "microsentinel_n": ms.get("n"),
+                    "baseline_cpu": cpu_usage.get("baseline"),
+                    "perf_cpu": cpu_usage.get("perf"),
+                    "microsentinel_cpu": cpu_usage.get("microsentinel"),
                 }
             )
 
